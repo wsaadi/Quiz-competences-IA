@@ -1,4 +1,4 @@
-import { Component, OnInit, signal } from '@angular/core';
+import { Component, OnInit, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatToolbarModule } from '@angular/material/toolbar';
@@ -67,241 +67,273 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
         <mat-tab-group animationDuration="200ms">
           <!-- Stats tab -->
           <mat-tab label="Statistiques">
-            <div class="tab-content" *ngIf="stats() as s">
-              <div class="stats-grid">
-                <mat-card class="stat-card">
-                  <div class="stat-value">{{ s.total_evaluations }}</div>
-                  <div class="stat-label">Évaluations totales</div>
-                </mat-card>
-                <mat-card class="stat-card">
-                  <div class="stat-value">{{ s.completed_evaluations }}</div>
-                  <div class="stat-label">Terminées</div>
-                </mat-card>
-                <mat-card class="stat-card">
-                  <div class="stat-value">{{ s.average_score | number:'1.0-0' }}</div>
-                  <div class="stat-label">Score moyen</div>
-                </mat-card>
-                <mat-card class="stat-card">
-                  <div class="stat-value">{{ users().length }}</div>
-                  <div class="stat-label">Utilisateurs</div>
-                </mat-card>
-              </div>
+            <ng-template matTabContent>
+              <div class="tab-content" *ngIf="stats() as s">
+                <div class="stats-grid">
+                  <mat-card class="stat-card">
+                    <div class="stat-value">{{ s.total_evaluations }}</div>
+                    <div class="stat-label">Evaluations totales</div>
+                  </mat-card>
+                  <mat-card class="stat-card">
+                    <div class="stat-value">{{ s.completed_evaluations }}</div>
+                    <div class="stat-label">Terminées</div>
+                  </mat-card>
+                  <mat-card class="stat-card">
+                    <div class="stat-value">{{ (s.average_score ?? 0) | number:'1.0-0' }}</div>
+                    <div class="stat-label">Score moyen</div>
+                  </mat-card>
+                  <mat-card class="stat-card">
+                    <div class="stat-value">{{ users().length }}</div>
+                    <div class="stat-label">Utilisateurs</div>
+                  </mat-card>
+                </div>
 
-              <!-- Score distribution -->
-              <div class="charts-row">
-                <mat-card class="chart-card">
-                  <mat-card-header>
-                    <mat-card-title>Distribution des scores</mat-card-title>
-                  </mat-card-header>
-                  <mat-card-content>
-                    <div class="distribution-bars">
-                      <div
-                        *ngFor="let item of getScoreDistItems(s)"
-                        class="dist-item"
-                      >
-                        <span class="dist-label">{{ item.label }}</span>
-                        <div class="dist-bar-bg">
-                          <div
-                            class="dist-bar"
-                            [style.width.%]="item.pct"
-                            [style.background]="item.color"
-                          ></div>
+                <!-- Score distribution -->
+                <div class="charts-row">
+                  <mat-card class="chart-card">
+                    <mat-card-header>
+                      <mat-card-title>Distribution des scores</mat-card-title>
+                    </mat-card-header>
+                    <mat-card-content>
+                      <div class="distribution-bars">
+                        <div
+                          *ngFor="let item of scoreDistItems()"
+                          class="dist-item"
+                        >
+                          <span class="dist-label">{{ item.label }}</span>
+                          <div class="dist-bar-bg">
+                            <div
+                              class="dist-bar"
+                              [style.width.%]="item.pct"
+                              [style.background]="item.color"
+                            ></div>
+                          </div>
+                          <span class="dist-count">{{ item.count }}</span>
                         </div>
-                        <span class="dist-count">{{ item.count }}</span>
                       </div>
-                    </div>
-                  </mat-card-content>
-                </mat-card>
+                    </mat-card-content>
+                  </mat-card>
 
-                <mat-card class="chart-card">
+                  <mat-card class="chart-card">
+                    <mat-card-header>
+                      <mat-card-title>Niveaux détectés</mat-card-title>
+                    </mat-card-header>
+                    <mat-card-content>
+                      <div class="level-list">
+                        <div *ngFor="let lvl of levelItems()" class="level-item">
+                          <mat-chip highlighted>{{ lvl.label }}</mat-chip>
+                          <span class="level-count">{{ lvl.count }} collaborateur(s)</span>
+                        </div>
+                      </div>
+                    </mat-card-content>
+                  </mat-card>
+                </div>
+
+                <!-- Domain averages -->
+                <mat-card class="domain-avg-card">
                   <mat-card-header>
-                    <mat-card-title>Niveaux détectés</mat-card-title>
+                    <mat-card-title>Moyennes par domaine</mat-card-title>
                   </mat-card-header>
                   <mat-card-content>
-                    <div class="level-list">
-                      <div *ngFor="let lvl of getLevelItems(s)" class="level-item">
-                        <mat-chip highlighted>{{ lvl.label }}</mat-chip>
-                        <span class="level-count">{{ lvl.count }} collaborateur(s)</span>
+                    <div class="domain-row" *ngFor="let d of domainAvgs()">
+                      <span class="domain-name">{{ d.label }}</span>
+                      <div class="domain-bar-bg">
+                        <div
+                          class="domain-bar"
+                          [style.width.%]="d.score"
+                          [style.background]="getScoreColor(d.score)"
+                        ></div>
                       </div>
+                      <span class="domain-score">{{ d.score | number:'1.0-0' }}/100</span>
                     </div>
                   </mat-card-content>
                 </mat-card>
               </div>
-
-              <!-- Domain averages -->
-              <mat-card class="domain-avg-card">
-                <mat-card-header>
-                  <mat-card-title>Moyennes par domaine</mat-card-title>
-                </mat-card-header>
-                <mat-card-content>
-                  <div class="domain-row" *ngFor="let d of getDomainAvgs(s)">
-                    <span class="domain-name">{{ d.label }}</span>
-                    <div class="domain-bar-bg">
-                      <div
-                        class="domain-bar"
-                        [style.width.%]="d.score"
-                        [style.background]="getScoreColor(d.score)"
-                      ></div>
-                    </div>
-                    <span class="domain-score">{{ d.score | number:'1.0-0' }}/100</span>
-                  </div>
-                </mat-card-content>
-              </mat-card>
-            </div>
+            </ng-template>
           </mat-tab>
 
           <!-- Evaluations tab -->
-          <mat-tab label="Évaluations">
-            <div class="tab-content">
-              <mat-accordion>
-                <mat-expansion-panel *ngFor="let ev of evaluations()">
-                  <mat-expansion-panel-header>
-                    <mat-panel-title>
-                      {{ ev.user?.full_name || 'Utilisateur #' + ev.user_id }}
-                    </mat-panel-title>
-                    <mat-panel-description>
-                      {{ ev.started_at | date:'dd/MM/yyyy HH:mm' }}
-                      —
-                      <mat-chip [class]="'status-' + ev.status" size="small">
-                        {{ ev.status === 'completed' ? 'Terminée' : 'En cours' }}
-                      </mat-chip>
-                      <span *ngIf="ev.scores?.score_global" class="panel-score">
-                        {{ ev.scores!.score_global | number:'1.0-0' }}/100
-                      </span>
-                    </mat-panel-description>
-                  </mat-expansion-panel-header>
+          <mat-tab label="Evaluations">
+            <ng-template matTabContent>
+              <div class="tab-content">
+                <mat-accordion>
+                  <mat-expansion-panel *ngFor="let ev of evaluations()">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>
+                        {{ ev.user?.full_name || 'Utilisateur #' + ev.user_id }}
+                      </mat-panel-title>
+                      <mat-panel-description>
+                        {{ ev.started_at | date:'dd/MM/yyyy HH:mm' }}
+                        —
+                        <mat-chip [class]="'status-' + ev.status" size="small">
+                          {{ ev.status === 'completed' ? 'Terminée' : 'En cours' }}
+                        </mat-chip>
+                        <span *ngIf="ev.scores?.score_global != null" class="panel-score">
+                          {{ ev.scores!.score_global | number:'1.0-0' }}/100
+                        </span>
+                      </mat-panel-description>
+                    </mat-expansion-panel-header>
 
-                  <div class="eval-detail" *ngIf="ev.scores">
-                    <div class="detail-grid">
-                      <div class="detail-left">
-                        <h4>Scores</h4>
-                        <app-score-radar [scores]="$any(ev.scores) || {}"></app-score-radar>
+                    <ng-template matExpansionPanelContent>
+                      <div class="eval-detail" *ngIf="ev.scores">
+                        <div class="detail-grid">
+                          <div class="detail-left">
+                            <h4>Scores</h4>
+                            <app-score-radar [scores]="ev.scores"></app-score-radar>
 
-                        <div class="level-badge">
-                          Niveau : <strong>{{ getLevelLabel(ev.detected_level) }}</strong>
+                            <div class="level-badge">
+                              Niveau : <strong>{{ getLevelLabel(ev.detected_level) }}</strong>
+                            </div>
+                          </div>
+                          <div class="detail-right">
+                            <h4>Feedback Admin</h4>
+                            <p class="admin-feedback">{{ ev.feedback_admin || 'Pas de feedback' }}</p>
+
+                            <h4>Feedback Collaborateur</h4>
+                            <p class="collab-feedback">{{ ev.feedback_collaborator || 'Pas de feedback' }}</p>
+                          </div>
+                        </div>
+
+                        <button
+                          mat-stroked-button
+                          (click)="loadConversation(ev)"
+                          *ngIf="!ev.messages?.length"
+                        >
+                          <mat-icon>chat</mat-icon> Voir la conversation
+                        </button>
+
+                        <div class="conversation" *ngIf="ev.messages?.length">
+                          <h4>Conversation ({{ ev.messages.length }} messages)</h4>
+                          <div
+                            *ngFor="let msg of ev.messages"
+                            class="conv-msg"
+                            [class.conv-user]="msg.role === 'user'"
+                            [class.conv-ai]="msg.role === 'assistant'"
+                          >
+                            <strong>{{ msg.role === 'user' ? 'Collaborateur' : 'Aria' }} :</strong>
+                            {{ msg.content }}
+                          </div>
                         </div>
                       </div>
-                      <div class="detail-right">
-                        <h4>Feedback Admin</h4>
-                        <p class="admin-feedback">{{ ev.feedback_admin || 'Pas de feedback' }}</p>
 
-                        <h4>Feedback Collaborateur</h4>
-                        <p class="collab-feedback">{{ ev.feedback_collaborator || 'Pas de feedback' }}</p>
+                      <div class="eval-detail" *ngIf="!ev.scores">
+                        <p>Evaluation en cours — pas encore de scores.</p>
+                        <button
+                          mat-stroked-button
+                          (click)="loadConversation(ev)"
+                          *ngIf="!ev.messages?.length"
+                        >
+                          <mat-icon>chat</mat-icon> Voir la conversation
+                        </button>
+
+                        <div class="conversation" *ngIf="ev.messages?.length">
+                          <h4>Conversation ({{ ev.messages.length }} messages)</h4>
+                          <div
+                            *ngFor="let msg of ev.messages"
+                            class="conv-msg"
+                            [class.conv-user]="msg.role === 'user'"
+                            [class.conv-ai]="msg.role === 'assistant'"
+                          >
+                            <strong>{{ msg.role === 'user' ? 'Collaborateur' : 'Aria' }} :</strong>
+                            {{ msg.content }}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-
-                    <button
-                      mat-stroked-button
-                      (click)="loadConversation(ev)"
-                      *ngIf="!ev.messages?.length"
-                    >
-                      <mat-icon>chat</mat-icon> Voir la conversation
-                    </button>
-
-                    <div class="conversation" *ngIf="ev.messages?.length">
-                      <h4>Conversation ({{ ev.messages.length }} messages)</h4>
-                      <div
-                        *ngFor="let msg of ev.messages"
-                        class="conv-msg"
-                        [class.conv-user]="msg.role === 'user'"
-                        [class.conv-ai]="msg.role === 'assistant'"
-                      >
-                        <strong>{{ msg.role === 'user' ? 'Collaborateur' : 'Aria' }} :</strong>
-                        {{ msg.content }}
-                      </div>
-                    </div>
-                  </div>
-                </mat-expansion-panel>
-              </mat-accordion>
-            </div>
+                    </ng-template>
+                  </mat-expansion-panel>
+                </mat-accordion>
+              </div>
+            </ng-template>
           </mat-tab>
 
           <!-- Users tab -->
           <mat-tab label="Utilisateurs">
-            <div class="tab-content">
-              <mat-card class="new-user-card">
-                <mat-card-header>
-                  <mat-card-title>Créer un utilisateur</mat-card-title>
-                </mat-card-header>
-                <mat-card-content>
-                  <form (ngSubmit)="createUser()" class="user-form">
-                    <mat-form-field appearance="outline">
-                      <mat-label>Nom complet</mat-label>
-                      <input matInput [(ngModel)]="newUser.full_name" name="full_name" required />
-                    </mat-form-field>
-                    <mat-form-field appearance="outline">
-                      <mat-label>Username</mat-label>
-                      <input matInput [(ngModel)]="newUser.username" name="username" required />
-                    </mat-form-field>
-                    <mat-form-field appearance="outline">
-                      <mat-label>Email</mat-label>
-                      <input matInput [(ngModel)]="newUser.email" name="email" required type="email" />
-                    </mat-form-field>
-                    <mat-form-field appearance="outline">
-                      <mat-label>Mot de passe</mat-label>
-                      <input matInput [(ngModel)]="newUser.password" name="password" required type="password" />
-                    </mat-form-field>
-                    <mat-form-field appearance="outline">
-                      <mat-label>Rôle</mat-label>
-                      <mat-select [(ngModel)]="newUser.role" name="role">
-                        <mat-option value="collaborator">Collaborateur</mat-option>
-                        <mat-option value="admin">Administrateur</mat-option>
-                      </mat-select>
-                    </mat-form-field>
-                    <button mat-raised-button color="primary" type="submit">
-                      <mat-icon>person_add</mat-icon> Créer
-                    </button>
-                  </form>
-                </mat-card-content>
-              </mat-card>
-
-              <mat-card class="users-table-card">
-                <table mat-table [dataSource]="users()" class="full-width">
-                  <ng-container matColumnDef="full_name">
-                    <th mat-header-cell *matHeaderCellDef>Nom</th>
-                    <td mat-cell *matCellDef="let u">{{ u.full_name }}</td>
-                  </ng-container>
-                  <ng-container matColumnDef="username">
-                    <th mat-header-cell *matHeaderCellDef>Username</th>
-                    <td mat-cell *matCellDef="let u">{{ u.username }}</td>
-                  </ng-container>
-                  <ng-container matColumnDef="email">
-                    <th mat-header-cell *matHeaderCellDef>Email</th>
-                    <td mat-cell *matCellDef="let u">{{ u.email }}</td>
-                  </ng-container>
-                  <ng-container matColumnDef="role">
-                    <th mat-header-cell *matHeaderCellDef>Rôle</th>
-                    <td mat-cell *matCellDef="let u">
-                      <mat-chip [color]="u.role === 'admin' ? 'accent' : 'primary'" highlighted>
-                        {{ u.role }}
-                      </mat-chip>
-                    </td>
-                  </ng-container>
-                  <ng-container matColumnDef="status">
-                    <th mat-header-cell *matHeaderCellDef>Statut</th>
-                    <td mat-cell *matCellDef="let u">
-                      {{ u.is_active ? 'Actif' : 'Désactivé' }}
-                    </td>
-                  </ng-container>
-                  <ng-container matColumnDef="actions">
-                    <th mat-header-cell *matHeaderCellDef></th>
-                    <td mat-cell *matCellDef="let u">
-                      <button
-                        mat-icon-button
-                        color="warn"
-                        (click)="deactivateUser(u.id)"
-                        *ngIf="u.is_active"
-                      >
-                        <mat-icon>block</mat-icon>
+            <ng-template matTabContent>
+              <div class="tab-content">
+                <mat-card class="new-user-card">
+                  <mat-card-header>
+                    <mat-card-title>Créer un utilisateur</mat-card-title>
+                  </mat-card-header>
+                  <mat-card-content>
+                    <form (ngSubmit)="createUser()" class="user-form">
+                      <mat-form-field appearance="outline">
+                        <mat-label>Nom complet</mat-label>
+                        <input matInput [(ngModel)]="newUser.full_name" name="full_name" required />
+                      </mat-form-field>
+                      <mat-form-field appearance="outline">
+                        <mat-label>Username</mat-label>
+                        <input matInput [(ngModel)]="newUser.username" name="username" required />
+                      </mat-form-field>
+                      <mat-form-field appearance="outline">
+                        <mat-label>Email</mat-label>
+                        <input matInput [(ngModel)]="newUser.email" name="email" required type="email" />
+                      </mat-form-field>
+                      <mat-form-field appearance="outline">
+                        <mat-label>Mot de passe</mat-label>
+                        <input matInput [(ngModel)]="newUser.password" name="password" required type="password" />
+                      </mat-form-field>
+                      <mat-form-field appearance="outline">
+                        <mat-label>Rôle</mat-label>
+                        <mat-select [(ngModel)]="newUser.role" name="role">
+                          <mat-option value="collaborator">Collaborateur</mat-option>
+                          <mat-option value="admin">Administrateur</mat-option>
+                        </mat-select>
+                      </mat-form-field>
+                      <button mat-raised-button color="primary" type="submit">
+                        <mat-icon>person_add</mat-icon> Créer
                       </button>
-                    </td>
-                  </ng-container>
+                    </form>
+                  </mat-card-content>
+                </mat-card>
 
-                  <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-                  <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
-                </table>
-              </mat-card>
-            </div>
+                <mat-card class="users-table-card">
+                  <table mat-table [dataSource]="users()" class="full-width">
+                    <ng-container matColumnDef="full_name">
+                      <th mat-header-cell *matHeaderCellDef>Nom</th>
+                      <td mat-cell *matCellDef="let u">{{ u.full_name }}</td>
+                    </ng-container>
+                    <ng-container matColumnDef="username">
+                      <th mat-header-cell *matHeaderCellDef>Username</th>
+                      <td mat-cell *matCellDef="let u">{{ u.username }}</td>
+                    </ng-container>
+                    <ng-container matColumnDef="email">
+                      <th mat-header-cell *matHeaderCellDef>Email</th>
+                      <td mat-cell *matCellDef="let u">{{ u.email }}</td>
+                    </ng-container>
+                    <ng-container matColumnDef="role">
+                      <th mat-header-cell *matHeaderCellDef>Rôle</th>
+                      <td mat-cell *matCellDef="let u">
+                        <mat-chip [color]="u.role === 'admin' ? 'accent' : 'primary'" highlighted>
+                          {{ u.role }}
+                        </mat-chip>
+                      </td>
+                    </ng-container>
+                    <ng-container matColumnDef="status">
+                      <th mat-header-cell *matHeaderCellDef>Statut</th>
+                      <td mat-cell *matCellDef="let u">
+                        {{ u.is_active ? 'Actif' : 'Désactivé' }}
+                      </td>
+                    </ng-container>
+                    <ng-container matColumnDef="actions">
+                      <th mat-header-cell *matHeaderCellDef></th>
+                      <td mat-cell *matCellDef="let u">
+                        <button
+                          mat-icon-button
+                          color="warn"
+                          (click)="deactivateUser(u.id)"
+                          *ngIf="u.is_active"
+                        >
+                          <mat-icon>block</mat-icon>
+                        </button>
+                      </td>
+                    </ng-container>
+
+                    <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+                    <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
+                  </table>
+                </mat-card>
+              </div>
+            </ng-template>
           </mat-tab>
         </mat-tab-group>
       </div>
@@ -410,6 +442,46 @@ export class AdminComponent implements OnInit {
     role: 'collaborator',
   };
 
+  // Cached computed values — avoids creating new arrays on every change detection cycle
+  scoreDistItems = computed(() => {
+    const s = this.stats();
+    if (!s) return [];
+    const total = Object.values(s.score_distribution).reduce((a, b) => a + b, 0) || 1;
+    const colors: Record<string, string> = {
+      '0-25': '#f44336', '26-50': '#FF5722', '51-75': '#FF9800', '76-100': '#4CAF50',
+    };
+    return Object.entries(s.score_distribution).map(([label, count]) => ({
+      label,
+      count,
+      pct: (count / total) * 100,
+      color: colors[label] || '#999',
+    }));
+  });
+
+  levelItems = computed(() => {
+    const s = this.stats();
+    if (!s) return [];
+    const labelMap: Record<string, string> = {
+      debutant: 'Débutant',
+      intermediaire: 'Intermédiaire',
+      avance: 'Avancé',
+      expert: 'Expert',
+    };
+    return Object.entries(s.level_distribution).map(([key, count]) => ({
+      label: labelMap[key] || key,
+      count,
+    }));
+  });
+
+  domainAvgs = computed(() => {
+    const s = this.stats();
+    if (!s) return [];
+    return Object.entries(s.domain_averages).map(([label, score]) => ({
+      label,
+      score,
+    }));
+  });
+
   constructor(
     private adminService: AdminService,
     private authService: AuthService,
@@ -478,38 +550,5 @@ export class AdminComponent implements OnInit {
     if (score >= 50) return '#FF9800';
     if (score >= 25) return '#FF5722';
     return '#f44336';
-  }
-
-  getScoreDistItems(s: GlobalStats) {
-    const total = Object.values(s.score_distribution).reduce((a, b) => a + b, 0) || 1;
-    const colors: Record<string, string> = {
-      '0-25': '#f44336', '26-50': '#FF5722', '51-75': '#FF9800', '76-100': '#4CAF50',
-    };
-    return Object.entries(s.score_distribution).map(([label, count]) => ({
-      label,
-      count,
-      pct: (count / total) * 100,
-      color: colors[label] || '#999',
-    }));
-  }
-
-  getLevelItems(s: GlobalStats) {
-    const labelMap: Record<string, string> = {
-      debutant: 'Débutant',
-      intermediaire: 'Intermédiaire',
-      avance: 'Avancé',
-      expert: 'Expert',
-    };
-    return Object.entries(s.level_distribution).map(([key, count]) => ({
-      label: labelMap[key] || key,
-      count,
-    }));
-  }
-
-  getDomainAvgs(s: GlobalStats) {
-    return Object.entries(s.domain_averages).map(([label, score]) => ({
-      label,
-      score,
-    }));
   }
 }
