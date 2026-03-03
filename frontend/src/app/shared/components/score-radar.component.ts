@@ -1,4 +1,4 @@
-import { Component, Input, OnInit, ViewChild, ElementRef, AfterViewInit, OnChanges, SimpleChanges } from '@angular/core';
+import { Component, Input, NgZone, ViewChild, ElementRef, AfterViewInit, OnChanges, OnDestroy, SimpleChanges } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Chart, RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend } from 'chart.js';
 
@@ -11,11 +11,13 @@ Chart.register(RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Le
   template: `<div class="chart-wrapper"><canvas #chartCanvas></canvas></div>`,
   styles: [`.chart-wrapper { position: relative; max-width: 450px; margin: 0 auto; }`],
 })
-export class ScoreRadarComponent implements AfterViewInit, OnChanges {
+export class ScoreRadarComponent implements AfterViewInit, OnChanges, OnDestroy {
   @ViewChild('chartCanvas') canvasRef!: ElementRef<HTMLCanvasElement>;
   @Input() scores: any = {};
 
   private chart: Chart | null = null;
+
+  constructor(private ngZone: NgZone) {}
 
   private readonly labels = [
     'Connaissance marché',
@@ -40,13 +42,18 @@ export class ScoreRadarComponent implements AfterViewInit, OnChanges {
   ];
 
   ngAfterViewInit(): void {
-    this.createChart();
+    this.ngZone.runOutsideAngular(() => this.createChart());
   }
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['scores'] && this.chart) {
-      this.updateChart();
+      this.ngZone.runOutsideAngular(() => this.updateChart());
     }
+  }
+
+  ngOnDestroy(): void {
+    this.chart?.destroy();
+    this.chart = null;
   }
 
   private getData(): number[] {
@@ -77,6 +84,7 @@ export class ScoreRadarComponent implements AfterViewInit, OnChanges {
       },
       options: {
         responsive: true,
+        animation: { duration: 400 },
         scales: {
           r: {
             beginAtZero: true,
