@@ -1,0 +1,22 @@
+services:
+  backend:
+    build: ./backend
+    container_name: quiz-ia-backend
+    env_file: ./backend/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - db-data:/app
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: quiz-ia-frontend
+    ports:
+      - "4200:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  db-data:
