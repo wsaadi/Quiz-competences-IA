@@ -1,0 +1,90 @@
+import { Injectable } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { environment } from '../../../environments/environment';
+
+export interface ChatResponse {
+  response: string;
+  phase: string;
+  is_complete: boolean;
+  progress_percent: number;
+}
+
+export interface EvaluationScores {
+  score_market_knowledge: number | null;
+  score_terminology: number | null;
+  score_interest_curiosity: number | null;
+  score_personal_watch: number | null;
+  score_technical_level: number | null;
+  score_ai_usage: number | null;
+  score_integration_deployment: number | null;
+  score_conception_dev: number | null;
+  score_global: number | null;
+  detected_level: string | null;
+}
+
+export interface Evaluation {
+  id: number;
+  user_id: number;
+  status: string;
+  scores: EvaluationScores | null;
+  feedback_collaborator: string | null;
+  feedback_admin: string | null;
+  total_messages: number;
+  started_at: string;
+  completed_at: string | null;
+  detected_level: string | null;
+}
+
+export interface EvaluationDetail extends Evaluation {
+  messages: ChatMessageRecord[];
+  user: { id: number; full_name: string; username: string; email: string } | null;
+}
+
+export interface ChatMessageRecord {
+  id: number;
+  role: string;
+  content: string;
+  phase: string | null;
+  created_at: string;
+}
+
+@Injectable({ providedIn: 'root' })
+export class EvaluationService {
+  constructor(private http: HttpClient) {}
+
+  startEvaluation(): Observable<ChatResponse> {
+    return this.http.post<ChatResponse>(
+      `${environment.apiUrl}/evaluations/start`,
+      {}
+    );
+  }
+
+  sendMessage(evaluationId: number, message: string): Observable<ChatResponse> {
+    return this.http.post<ChatResponse>(
+      `${environment.apiUrl}/evaluations/${evaluationId}/chat`,
+      { message }
+    );
+  }
+
+  completeEvaluation(evaluationId: number): Observable<Evaluation> {
+    return this.http.post<Evaluation>(
+      `${environment.apiUrl}/evaluations/${evaluationId}/complete`,
+      {}
+    );
+  }
+
+  getMyEvaluations(): Observable<Evaluation[]> {
+    return this.http.get<Evaluation[]>(`${environment.apiUrl}/evaluations/my`);
+  }
+
+  getEvaluation(id: number): Observable<Evaluation> {
+    return this.http.get<Evaluation>(`${environment.apiUrl}/evaluations/${id}`);
+  }
+
+  getMessages(evaluationId: number): Observable<ChatMessageRecord[]> {
+    return this.http.get<ChatMessageRecord[]>(
+      `${environment.apiUrl}/evaluations/${evaluationId}/messages`
+    );
+  }
+}
