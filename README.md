@@ -34,7 +34,7 @@ cd backend
 cp .env.example .env
 # Éditer .env avec votre MISTRAL_API_KEY et un SECRET_KEY
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 8001
 ```
 
 ### Frontend
