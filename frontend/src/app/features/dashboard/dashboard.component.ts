@@ -47,6 +47,16 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
         <!-- Quick actions -->
         <div class="actions-row">
           <button
+            *ngIf="hasInProgress()"
+            mat-raised-button
+            color="accent"
+            (click)="resumeEvaluation()"
+            class="action-btn resume-btn"
+          >
+            <mat-icon>play_arrow</mat-icon>
+            Reprendre l'évaluation en cours
+          </button>
+          <button
             mat-raised-button
             color="primary"
             (click)="startNewEvaluation()"
@@ -108,7 +118,7 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
               </mat-card-title>
             </mat-card-header>
             <mat-card-content>
-              <p class="feedback-text">{{ latest.feedback_collaborator }}</p>
+              <div class="feedback-text" [innerHTML]="formatFeedback(latest.feedback_collaborator!)"></div>
             </mat-card-content>
           </mat-card>
         </div>
@@ -164,8 +174,17 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
     }
 
     .actions-row {
+      display: flex;
+      gap: 12px;
       margin-bottom: 24px;
+      flex-wrap: wrap;
       .action-btn { height: 48px; font-size: 15px; }
+      .resume-btn { animation: pulse-resume 2s infinite; }
+    }
+
+    @keyframes pulse-resume {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(108, 99, 255, 0.4); }
+      50% { box-shadow: 0 0 0 8px rgba(108, 99, 255, 0); }
     }
 
     .results-section h2, .history-section h2 {
@@ -254,9 +273,22 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
       }
       .feedback-text {
         font-size: 15px;
-        line-height: 1.7;
+        line-height: 1.8;
         color: #444;
-        font-style: italic;
+
+        ::ng-deep {
+          strong { color: #6C63FF; font-weight: 600; }
+          em { font-style: italic; }
+          ul, ol {
+            margin: 8px 0;
+            padding-left: 20px;
+          }
+          li {
+            margin: 4px 0;
+            line-height: 1.6;
+          }
+          p { margin: 8px 0; }
+        }
       }
     }
 
@@ -289,6 +321,7 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
 export class DashboardComponent implements OnInit {
   evaluations = signal<Evaluation[]>([]);
   latestCompleted = signal<Evaluation | null>(null);
+  hasInProgress = signal(false);
   loaded = signal(false);
   userName = '';
 
@@ -305,8 +338,13 @@ export class DashboardComponent implements OnInit {
       this.evaluations.set(evals);
       const completed = evals.find((e) => e.status === 'completed');
       if (completed) this.latestCompleted.set(completed);
+      this.hasInProgress.set(evals.some((e) => e.status === 'in_progress'));
       this.loaded.set(true);
     });
+  }
+
+  resumeEvaluation(): void {
+    this.router.navigate(['/evaluation']);
   }
 
   startNewEvaluation(): void {
@@ -336,6 +374,21 @@ export class DashboardComponent implements OnInit {
     if (score >= 50) return '#FF9800';
     if (score >= 25) return '#FF5722';
     return '#f44336';
+  }
+
+  formatFeedback(text: string): string {
+    let html = text
+      // Bold: **text**
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      // Italic: *text*
+      .replace(/(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+      // List items starting with - at the beginning of a line
+      .replace(/^- (.+)$/gm, '<li>$1</li>')
+      // Wrap consecutive <li> in <ul>
+      .replace(/((?:<li>.*<\/li>\s*)+)/g, '<ul>$1</ul>')
+      // Line breaks (but not inside lists)
+      .replace(/\n(?!<)/g, '<br>');
+    return html;
   }
 
   getDomainScores(ev: Evaluation): { label: string; score: number }[] {

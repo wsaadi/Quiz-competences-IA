@@ -268,7 +268,7 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
 
                             <div class="feedback-block">
                               <h4><mat-icon>sentiment_satisfied</mat-icon> Feedback Collaborateur</h4>
-                              <p class="collab-feedback">{{ ev.feedback_collaborator || 'Pas de feedback' }}</p>
+                              <div class="collab-feedback" [innerHTML]="formatFeedback(ev.feedback_collaborator || 'Pas de feedback')"></div>
                             </div>
                           </div>
                         </div>
@@ -640,7 +640,14 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
       h4 { display: flex; align-items: center; gap: 8px; color: #555; margin-bottom: 8px; }
     }
     .admin-feedback { background: #fff3e0; padding: 14px; border-radius: 10px; line-height: 1.6; font-size: 14px; }
-    .collab-feedback { background: #e8f5e9; padding: 14px; border-radius: 10px; line-height: 1.6; font-size: 14px; }
+    .collab-feedback {
+      background: #e8f5e9; padding: 14px; border-radius: 10px; line-height: 1.6; font-size: 14px;
+      ::ng-deep {
+        strong { color: #2E7D32; font-weight: 600; }
+        ul { margin: 6px 0; padding-left: 18px; }
+        li { margin: 3px 0; }
+      }
+    }
 
     .no-scores {
       display: flex; align-items: center; gap: 8px; color: #999; padding: 16px;
@@ -921,8 +928,51 @@ export class AdminComponent implements OnInit {
   }
 
   viewCollabFiche(user: UserOut): void {
-    this.adminService.getCollaborateurFiche(user.id).subscribe((fiche) => {
-      this.selectedFiche.set(fiche);
+    this.adminService.getCollaborateurFiche(user.id).subscribe({
+      next: (fiche) => {
+        this.selectedFiche.set(fiche);
+      },
+      error: (err) => {
+        console.error('Erreur chargement fiche:', err);
+        // Fallback: build a minimal fiche from locally available data
+        const userEvals = this.evaluations()
+          .filter((e) => e.user_id === user.id && e.status === 'completed');
+        const fallbackFiche: CollaborateurFiche = {
+          collaborateur: {
+            id: user.id,
+            nom: user.full_name,
+            email: user.email,
+            username: user.username,
+            role: user.role,
+          },
+          evaluations: userEvals.map((ev) => ({
+            id: ev.id,
+            date: ev.completed_at,
+            job_role: ev.job_role ?? null,
+            job_domain: ev.job_domain ?? null,
+            detected_level: ev.detected_level ?? null,
+            score_global: ev.scores?.score_global ?? null,
+            scores: ev.scores ? {
+              'Connaissance du marché': ev.scores.score_market_knowledge ?? null,
+              'Terminologie': ev.scores.score_terminology ?? null,
+              'Intérêt & curiosité': ev.scores.score_interest_curiosity ?? null,
+              'Veille personnelle': ev.scores.score_personal_watch ?? null,
+              'Niveau technique': ev.scores.score_technical_level ?? null,
+              'Utilisation IA': ev.scores.score_ai_usage ?? null,
+              'Intégration & déploiement': ev.scores.score_integration_deployment ?? null,
+              'Conception & dev': ev.scores.score_conception_dev ?? null,
+            } as Record<string, number | null> : {} as Record<string, number | null>,
+            feedback_collaborateur: ev.feedback_collaborator ?? null,
+            feedback_admin: ev.feedback_admin ?? null,
+          })),
+        };
+        this.selectedFiche.set(fallbackFiche);
+        this.snackBar.open(
+          'Fiche chargée depuis les données locales (le serveur a renvoyé une erreur)',
+          'OK',
+          { duration: 4000 }
+        );
+      },
     });
   }
 
@@ -978,6 +1028,15 @@ export class AdminComponent implements OnInit {
     if (score >= 50) return '#4CAF50';
     if (score >= 25) return '#FF9800';
     return '#f44336';
+  }
+
+  formatFeedback(text: string): string {
+    return text
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+      .replace(/^- (.+)$/gm, '<li>$1</li>')
+      .replace(/((?:<li>.*<\/li>\s*)+)/g, '<ul>$1</ul>')
+      .replace(/\n(?!<)/g, '<br>');
   }
 
   getEvalDomainScores(ev: EvaluationDetail): { label: string; score: number }[] {

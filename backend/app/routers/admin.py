@@ -2,12 +2,15 @@
 
 import csv
 import io
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
 from app.core.security import get_password_hash, validate_password_strength
@@ -358,9 +361,11 @@ async def export_collaborateur_fiche(
     _admin: User = Depends(require_admin),
 ):
     """Export detailed evaluation data for a specific collaborateur (JSON for PDF generation)."""
+    logger.info("Fetching fiche for user_id=%s", user_id)
     user_result = await db.execute(select(User).where(User.id == user_id))
     user = user_result.scalar_one_or_none()
     if not user:
+        logger.warning("User not found: user_id=%s", user_id)
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
 
     evals_result = await db.execute(
