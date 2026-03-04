@@ -108,4 +108,12 @@ export class EvaluationService {
       {}
     );
   }
+
+  textToSpeech(text: string): Observable<Blob> {
+    return this.http.post(
+      `${environment.apiUrl}/evaluations/tts`,
+      { text },
+      { responseType: 'blob' }
+    );
+  }
 }
