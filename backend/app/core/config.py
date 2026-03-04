@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     MISTRAL_API_KEY: str = ""
     MISTRAL_MODEL: str = "mistral-large-latest"
 
+    # ElevenLabs TTS
+    ELEVENLABS_API_KEY: str = ""
+    ELEVENLABS_VOICE_ID: str = "21m00Tcm4TlvDq8ikWAM"  # "Rachel" — warm, friendly female voice
+
     # Security
     BCRYPT_ROUNDS: int = 12
     MAX_LOGIN_ATTEMPTS: int = 5

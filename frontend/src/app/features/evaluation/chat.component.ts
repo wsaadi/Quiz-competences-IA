@@ -523,9 +523,9 @@ export class ChatComponent implements AfterViewChecked, OnInit {
   isSpeaking = signal(false);
   autoTTS = signal(false);
   speechSupported = false;
-  ttsSupported = false;
+  ttsSupported = true;  // Always true — ElevenLabs backend or browser fallback
   private recognition: any = null;
-  private synthesis: SpeechSynthesis | null = null;
+  private currentAudio: HTMLAudioElement | null = null;
 
   private lastFailedMessage = '';
 
@@ -569,11 +569,6 @@ export class ChatComponent implements AfterViewChecked, OnInit {
       this.recognition.onend = () => this.isRecording.set(false);
     }
 
-    // Initialize Text-to-Speech
-    if ('speechSynthesis' in window) {
-      this.ttsSupported = true;
-      this.synthesis = window.speechSynthesis;
-    }
   }
 
   ngOnInit(): void {
@@ -739,11 +734,7 @@ export class ChatComponent implements AfterViewChecked, OnInit {
   }
 
   pauseEvaluation(): void {
-    // Stop any ongoing speech
-    if (this.synthesis?.speaking) {
-      this.synthesis.cancel();
-      this.isSpeaking.set(false);
-    }
+    this.stopSpeaking();
     if (this.isRecording() && this.recognition) {
       this.recognition.stop();
       this.isRecording.set(false);
@@ -776,16 +767,47 @@ export class ChatComponent implements AfterViewChecked, OnInit {
     }
   }
 
-  // ── Text-to-Speech ──
+  // ── Text-to-Speech (ElevenLabs with browser fallback) ──
 
   speakMessage(text: string): void {
-    if (!this.synthesis) return;
-    if (this.synthesis.speaking) {
-      this.synthesis.cancel();
+    // If already speaking, stop
+    if (this.isSpeaking()) {
+      this.stopSpeaking();
+      return;
+    }
+
+    this.isSpeaking.set(true);
+
+    // Try ElevenLabs first via backend
+    this.evaluationService.textToSpeech(text).subscribe({
+      next: (audioBlob) => {
+        const url = URL.createObjectURL(audioBlob);
+        this.currentAudio = new Audio(url);
+        this.currentAudio.onended = () => {
+          this.isSpeaking.set(false);
+          URL.revokeObjectURL(url);
+          this.currentAudio = null;
+        };
+        this.currentAudio.onerror = () => {
+          URL.revokeObjectURL(url);
+          this.currentAudio = null;
+          // Fallback to browser TTS
+          this.browserTTSFallback(text);
+        };
+        this.currentAudio.play();
+      },
+      error: () => {
+        // ElevenLabs unavailable — fallback to browser TTS
+        this.browserTTSFallback(text);
+      },
+    });
+  }
+
+  private browserTTSFallback(text: string): void {
+    if (!('speechSynthesis' in window)) {
       this.isSpeaking.set(false);
       return;
     }
-    // Strip markdown and emojis for cleaner speech
     const clean = text
       .replace(/\*\*(.*?)\*\*/g, '$1')
       .replace(/\*(.*?)\*/g, '$1')
@@ -795,8 +817,18 @@ export class ChatComponent implements AfterViewChecked, OnInit {
     utterance.rate = 1.05;
     utterance.onend = () => this.isSpeaking.set(false);
     utterance.onerror = () => this.isSpeaking.set(false);
-    this.isSpeaking.set(true);
-    this.synthesis.speak(utterance);
+    window.speechSynthesis.speak(utterance);
+  }
+
+  private stopSpeaking(): void {
+    if (this.currentAudio) {
+      this.currentAudio.pause();
+      this.currentAudio = null;
+    }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    this.isSpeaking.set(false);
   }
 
   toggleAutoTTS(): void {
@@ -804,7 +836,7 @@ export class ChatComponent implements AfterViewChecked, OnInit {
   }
 
   private autoSpeakIfEnabled(text: string): void {
-    if (this.autoTTS() && this.synthesis) {
+    if (this.autoTTS()) {
       this.speakMessage(text);
     }
   }
