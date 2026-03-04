@@ -81,6 +81,29 @@ interface ChatMsg {
           <p><mat-icon>chat</mat-icon> {{ messages().length }} messages</p>
         </div>
 
+        <div class="tts-toggle" *ngIf="ttsSupported">
+          <button
+            mat-stroked-button
+            (click)="toggleAutoTTS()"
+            [class.active]="autoTTS()"
+            class="auto-tts-btn"
+          >
+            <mat-icon>{{ autoTTS() ? 'record_voice_over' : 'voice_over_off' }}</mat-icon>
+            {{ autoTTS() ? 'Lecture auto ON' : 'Lecture auto OFF' }}
+          </button>
+        </div>
+
+        <button
+          mat-stroked-button
+          class="pause-btn"
+          (click)="pauseEvaluation()"
+          [disabled]="!evaluationId() || isComplete() || sending()"
+          matTooltip="Quitter et reprendre plus tard"
+        >
+          <mat-icon>pause_circle</mat-icon>
+          Quitter (reprendre plus tard)
+        </button>
+
         <button
           mat-stroked-button
           color="warn"
@@ -132,7 +155,18 @@ interface ChatMsg {
             ></app-avatar>
             <div class="msg-bubble">
               <div class="msg-content" [innerHTML]="formatMessage(msg.content)"></div>
-              <div class="msg-time">{{ msg.timestamp | date:'HH:mm' }}</div>
+              <div class="msg-footer">
+                <span class="msg-time">{{ msg.timestamp | date:'HH:mm' }}</span>
+                <button
+                  *ngIf="msg.role === 'assistant'"
+                  mat-icon-button
+                  class="tts-btn"
+                  (click)="speakMessage(msg.content)"
+                  [matTooltip]="isSpeaking() ? 'Arrêter la lecture' : 'Écouter'"
+                >
+                  <mat-icon>{{ isSpeaking() ? 'volume_off' : 'volume_up' }}</mat-icon>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -161,11 +195,21 @@ interface ChatMsg {
 
         <!-- Input area -->
         <div class="input-area" *ngIf="evaluationId() && !isComplete()">
+          <button
+            mat-icon-button
+            (click)="toggleRecording()"
+            [class.recording]="isRecording()"
+            [disabled]="sending() || !speechSupported"
+            class="mic-btn"
+            [matTooltip]="isRecording() ? 'Arrêter la dictée' : 'Dicter (micro)'"
+          >
+            <mat-icon>{{ isRecording() ? 'mic_off' : 'mic' }}</mat-icon>
+          </button>
           <mat-form-field appearance="outline" class="msg-input">
             <input
               matInput
               [(ngModel)]="userMessage"
-              placeholder="Tape ta réponse ici..."
+              [placeholder]="isRecording() ? 'Dictée en cours...' : 'Tape ta réponse ici...'"
               (keydown.enter)="sendMessage()"
               [disabled]="sending()"
               autocomplete="off"
@@ -254,9 +298,15 @@ interface ChatMsg {
       }
     }
 
-    .end-btn {
-      margin-top: auto;
+    .pause-btn {
       width: 100%;
+      font-size: 12px;
+      margin-top: auto;
+    }
+
+    .end-btn {
+      width: 100%;
+      margin-top: 8px;
     }
 
     .chat-main {
@@ -334,13 +384,53 @@ interface ChatMsg {
       border-bottom-right-radius: 4px;
     }
 
-    .msg-time {
-      font-size: 11px;
-      opacity: 0.6;
+    .msg-footer {
+      display: flex;
+      align-items: center;
+      gap: 4px;
       margin-top: 4px;
     }
 
+    .msg-time {
+      font-size: 11px;
+      opacity: 0.6;
+    }
+
+    .tts-btn {
+      width: 24px;
+      height: 24px;
+      line-height: 24px;
+      mat-icon {
+        font-size: 14px;
+        width: 14px;
+        height: 14px;
+        opacity: 0.5;
+      }
+      &:hover mat-icon { opacity: 1; }
+    }
+
     .msg-content { white-space: pre-wrap; word-break: break-word; }
+
+    .mic-btn {
+      flex-shrink: 0;
+      transition: all 0.3s;
+      &.recording {
+        color: #f44336;
+        animation: pulse-mic 1.5s infinite;
+      }
+    }
+
+    .tts-toggle { margin-bottom: 8px; }
+    .auto-tts-btn {
+      width: 100%;
+      font-size: 12px;
+      &.active { color: #6C63FF; border-color: #6C63FF; }
+    }
+
+    @keyframes pulse-mic {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.15); }
+    }
 
     .typing {
       display: flex;
@@ -428,6 +518,15 @@ export class ChatComponent implements AfterViewChecked, OnInit {
   avatarMood = signal<'neutral' | 'happy' | 'thinking' | 'encouraging'>('happy');
   errorMessage = signal<string | null>(null);
 
+  // Speech features
+  isRecording = signal(false);
+  isSpeaking = signal(false);
+  autoTTS = signal(false);
+  speechSupported = false;
+  ttsSupported = false;
+  private recognition: any = null;
+  private synthesis: SpeechSynthesis | null = null;
+
   private lastFailedMessage = '';
 
   userName = computed(() => this.authService.currentUser()?.fullName ?? 'Collaborateur');
@@ -450,7 +549,32 @@ export class ChatComponent implements AfterViewChecked, OnInit {
     private evaluationService: EvaluationService,
     private authService: AuthService,
     private router: Router
-  ) {}
+  ) {
+    // Initialize Speech-to-Text
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      this.speechSupported = true;
+      this.recognition = new SpeechRecognition();
+      this.recognition.lang = 'fr-FR';
+      this.recognition.continuous = true;
+      this.recognition.interimResults = true;
+      this.recognition.onresult = (event: any) => {
+        let transcript = '';
+        for (let i = 0; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        this.userMessage = transcript;
+      };
+      this.recognition.onerror = () => this.isRecording.set(false);
+      this.recognition.onend = () => this.isRecording.set(false);
+    }
+
+    // Initialize Text-to-Speech
+    if ('speechSynthesis' in window) {
+      this.ttsSupported = true;
+      this.synthesis = window.speechSynthesis;
+    }
+  }
 
   ngOnInit(): void {
     // Auto-resume any in-progress evaluation
@@ -516,6 +640,7 @@ export class ChatComponent implements AfterViewChecked, OnInit {
         this.currentPhase.set(res.phase);
         this.avatarMood.set('happy');
         this.shouldScroll = true;
+        this.autoSpeakIfEnabled(res.response);
       },
       error: (err) => {
         this.starting.set(false);
@@ -532,6 +657,12 @@ export class ChatComponent implements AfterViewChecked, OnInit {
   sendMessage(): void {
     const text = this.userMessage.trim();
     if (!text || !this.evaluationId() || this.sending()) return;
+
+    // Stop recording if active
+    if (this.isRecording() && this.recognition) {
+      this.recognition.stop();
+      this.isRecording.set(false);
+    }
 
     this.errorMessage.set(null);
     this.messages.update((m) => [
@@ -556,6 +687,7 @@ export class ChatComponent implements AfterViewChecked, OnInit {
         this.isComplete.set(res.is_complete);
         this.avatarMood.set(res.is_complete ? 'happy' : 'encouraging');
         this.shouldScroll = true;
+        this.autoSpeakIfEnabled(res.response);
       },
       error: () => {
         this.sending.set(false);
@@ -606,6 +738,20 @@ export class ChatComponent implements AfterViewChecked, OnInit {
     });
   }
 
+  pauseEvaluation(): void {
+    // Stop any ongoing speech
+    if (this.synthesis?.speaking) {
+      this.synthesis.cancel();
+      this.isSpeaking.set(false);
+    }
+    if (this.isRecording() && this.recognition) {
+      this.recognition.stop();
+      this.isRecording.set(false);
+    }
+    // Navigate away — evaluation stays in_progress and auto-resumes on next visit
+    this.router.navigate(['/dashboard']);
+  }
+
   goToDashboard(): void {
     this.router.navigate(['/dashboard']);
   }
@@ -615,6 +761,52 @@ export class ChatComponent implements AfterViewChecked, OnInit {
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.*?)\*/g, '<em>$1</em>')
       .replace(/\n/g, '<br>');
+  }
+
+  // ── Speech-to-Text ──
+
+  toggleRecording(): void {
+    if (!this.recognition) return;
+    if (this.isRecording()) {
+      this.recognition.stop();
+      this.isRecording.set(false);
+    } else {
+      this.recognition.start();
+      this.isRecording.set(true);
+    }
+  }
+
+  // ── Text-to-Speech ──
+
+  speakMessage(text: string): void {
+    if (!this.synthesis) return;
+    if (this.synthesis.speaking) {
+      this.synthesis.cancel();
+      this.isSpeaking.set(false);
+      return;
+    }
+    // Strip markdown and emojis for cleaner speech
+    const clean = text
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/\*(.*?)\*/g, '$1')
+      .replace(/[^\p{L}\p{N}\p{P}\p{Z}]/gu, '');
+    const utterance = new SpeechSynthesisUtterance(clean);
+    utterance.lang = 'fr-FR';
+    utterance.rate = 1.05;
+    utterance.onend = () => this.isSpeaking.set(false);
+    utterance.onerror = () => this.isSpeaking.set(false);
+    this.isSpeaking.set(true);
+    this.synthesis.speak(utterance);
+  }
+
+  toggleAutoTTS(): void {
+    this.autoTTS.update((v) => !v);
+  }
+
+  private autoSpeakIfEnabled(text: string): void {
+    if (this.autoTTS() && this.synthesis) {
+      this.speakMessage(text);
+    }
   }
 
   private scrollToBottom(): void {
