@@ -1,6 +1,11 @@
-"""Admin router — user management, evaluation review, global statistics."""
+"""Admin router — user management, evaluation review, global statistics, exports."""
+
+import csv
+import io
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,12 +44,15 @@ async def create_user(
     if pw_error:
         raise HTTPException(status_code=400, detail=pw_error)
 
-    # Check uniqueness
-    existing = await db.execute(
-        select(User).where((User.email == body.email) | (User.username == body.username))
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Email ou nom d'utilisateur déjà utilisé")
+    # Check email uniqueness
+    email_check = await db.execute(select(User).where(User.email == body.email))
+    if email_check.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Cet email est déjà utilisé")
+
+    # Check username uniqueness
+    username_check = await db.execute(select(User).where(User.username == body.username))
+    if username_check.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Ce nom d'utilisateur est déjà utilisé")
 
     role = UserRole.ADMIN if body.role == "admin" else UserRole.COLLABORATOR
     user = User(
@@ -88,7 +96,6 @@ async def list_all_evaluations(
 
     output = []
     for ev in evaluations:
-        # Get associated user
         user_result = await db.execute(select(User).where(User.id == ev.user_id))
         user = user_result.scalar_one_or_none()
 
@@ -120,6 +127,8 @@ async def list_all_evaluations(
             started_at=ev.started_at,
             completed_at=ev.completed_at,
             detected_level=ev.detected_level,
+            job_role=ev.job_role,
+            job_domain=ev.job_domain,
             user=user_out,
         ))
 
@@ -177,6 +186,8 @@ async def get_evaluation_detail(
         started_at=ev.started_at,
         completed_at=ev.completed_at,
         detected_level=ev.detected_level,
+        job_role=ev.job_role,
+        job_domain=ev.job_domain,
         messages=messages,
         user=UserOut.model_validate(user) if user else None,
     )
@@ -200,6 +211,10 @@ async def global_statistics(
         )
     )
     completed = completed_result.scalar() or 0
+
+    # Total users
+    user_count_result = await db.execute(select(func.count(User.id)))
+    total_users = user_count_result.scalar() or 0
 
     # Average global score
     avg_result = await db.execute(
@@ -264,4 +279,128 @@ async def global_statistics(
         score_distribution=score_distribution,
         level_distribution=level_distribution,
         domain_averages=domain_averages,
+        total_users=total_users,
     )
+
+
+# ── Export endpoints ──────────────────────────────────────────────────
+
+@router.get("/export/evaluations/csv")
+async def export_evaluations_csv(
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Export all completed evaluations as CSV (Excel-compatible)."""
+    result = await db.execute(
+        select(Evaluation)
+        .where(Evaluation.status == EvaluationStatus.COMPLETED)
+        .order_by(Evaluation.completed_at.desc())
+    )
+    evaluations = result.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+
+    # Header
+    writer.writerow([
+        "ID", "Collaborateur", "Email", "Poste", "Domaine métier",
+        "Date évaluation", "Niveau détecté", "Score global",
+        "Connaissance marché", "Terminologie", "Intérêt & curiosité",
+        "Veille personnelle", "Niveau technique", "Utilisation IA",
+        "Intégration & déploiement", "Conception & dev",
+        "Feedback admin",
+    ])
+
+    for ev in evaluations:
+        user_result = await db.execute(select(User).where(User.id == ev.user_id))
+        user = user_result.scalar_one_or_none()
+
+        writer.writerow([
+            ev.id,
+            user.full_name if user else "N/A",
+            user.email if user else "N/A",
+            ev.job_role or "Non renseigné",
+            ev.job_domain or "Non renseigné",
+            ev.completed_at.strftime("%d/%m/%Y %H:%M") if ev.completed_at else "",
+            ev.detected_level or "",
+            ev.score_global or 0,
+            ev.score_market_knowledge or 0,
+            ev.score_terminology or 0,
+            ev.score_interest_curiosity or 0,
+            ev.score_personal_watch or 0,
+            ev.score_technical_level or 0,
+            ev.score_ai_usage or 0,
+            ev.score_integration_deployment or 0,
+            ev.score_conception_dev or 0,
+            (ev.feedback_admin or "").replace("\n", " "),
+        ])
+
+    output.seek(0)
+    # BOM for Excel UTF-8 compatibility
+    bom_output = io.BytesIO()
+    bom_output.write(b'\xef\xbb\xbf')
+    bom_output.write(output.getvalue().encode("utf-8"))
+    bom_output.seek(0)
+
+    return StreamingResponse(
+        bom_output,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename=evaluations_ia_{datetime.now().strftime('%Y%m%d')}.csv"
+        },
+    )
+
+
+@router.get("/export/collaborateur/{user_id}")
+async def export_collaborateur_fiche(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Export detailed evaluation data for a specific collaborateur (JSON for PDF generation)."""
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+    evals_result = await db.execute(
+        select(Evaluation)
+        .where(Evaluation.user_id == user_id, Evaluation.status == EvaluationStatus.COMPLETED)
+        .order_by(Evaluation.completed_at.desc())
+    )
+    evaluations = evals_result.scalars().all()
+
+    fiche = {
+        "collaborateur": {
+            "id": user.id,
+            "nom": user.full_name,
+            "email": user.email,
+            "username": user.username,
+            "role": user.role.value,
+        },
+        "evaluations": [],
+    }
+
+    for ev in evaluations:
+        fiche["evaluations"].append({
+            "id": ev.id,
+            "date": ev.completed_at.isoformat() if ev.completed_at else None,
+            "job_role": ev.job_role,
+            "job_domain": ev.job_domain,
+            "detected_level": ev.detected_level,
+            "score_global": ev.score_global,
+            "scores": {
+                "Connaissance du marché": ev.score_market_knowledge,
+                "Terminologie": ev.score_terminology,
+                "Intérêt & curiosité": ev.score_interest_curiosity,
+                "Veille personnelle": ev.score_personal_watch,
+                "Niveau technique": ev.score_technical_level,
+                "Utilisation IA": ev.score_ai_usage,
+                "Intégration & déploiement": ev.score_integration_deployment,
+                "Conception & dev": ev.score_conception_dev,
+            },
+            "feedback_collaborateur": ev.feedback_collaborator,
+            "feedback_admin": ev.feedback_admin,
+        })
+
+    return fiche

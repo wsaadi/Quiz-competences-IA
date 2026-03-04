@@ -47,7 +47,7 @@ async def start_evaluation(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Start a new evaluation session."""
+    """Start a new evaluation session. If one is already in-progress, return a conflict hint so the frontend can resume it."""
     # Check if there's already an in-progress evaluation
     result = await db.execute(
         select(Evaluation).where(
@@ -153,6 +153,13 @@ async def chat(
     db.add(ai_msg)
     evaluation.total_messages += 2
 
+    # Persist job context from metadata as soon as available
+    if meta:
+        if meta.get("job_role") and not evaluation.job_role:
+            evaluation.job_role = meta["job_role"]
+        if meta.get("job_domain") and not evaluation.job_domain:
+            evaluation.job_domain = meta["job_domain"]
+
     # If scoring phase, save final scores
     is_complete = False
     if meta and meta.get("phase") == "SCORING":
@@ -172,6 +179,10 @@ async def chat(
         evaluation.detected_level = meta.get("detected_level", "intermediaire")
         evaluation.feedback_collaborator = meta.get("feedback_collaborator", "")
         evaluation.feedback_admin = meta.get("feedback_admin", "")
+        if meta.get("job_role"):
+            evaluation.job_role = meta["job_role"]
+        if meta.get("job_domain"):
+            evaluation.job_domain = meta["job_domain"]
         evaluation.status = EvaluationStatus.COMPLETED
         evaluation.completed_at = datetime.now(timezone.utc)
         is_complete = True
@@ -232,6 +243,10 @@ async def force_complete(
         evaluation.detected_level = meta.get("detected_level", "intermediaire")
         evaluation.feedback_collaborator = meta.get("feedback_collaborator", "")
         evaluation.feedback_admin = meta.get("feedback_admin", "")
+        if meta.get("job_role"):
+            evaluation.job_role = meta["job_role"]
+        if meta.get("job_domain"):
+            evaluation.job_domain = meta["job_domain"]
 
     evaluation.status = EvaluationStatus.COMPLETED
     evaluation.completed_at = datetime.now(timezone.utc)
@@ -256,6 +271,8 @@ async def force_complete(
         started_at=evaluation.started_at,
         completed_at=evaluation.completed_at,
         detected_level=evaluation.detected_level,
+        job_role=evaluation.job_role,
+        job_domain=evaluation.job_domain,
     )
 
 
@@ -283,6 +300,8 @@ async def my_evaluations(
             started_at=ev.started_at,
             completed_at=ev.completed_at,
             detected_level=ev.detected_level,
+            job_role=ev.job_role,
+            job_domain=ev.job_domain,
         )
         for ev in evaluations
     ]
@@ -314,6 +333,8 @@ async def get_evaluation(
         started_at=ev.started_at,
         completed_at=ev.completed_at,
         detected_level=ev.detected_level,
+        job_role=ev.job_role,
+        job_domain=ev.job_domain,
     )
 
 
@@ -339,3 +360,28 @@ async def get_messages(
         .order_by(EvaluationMessage.created_at)
     )
     return msg_result.scalars().all()
+
+
+@router.post("/{evaluation_id}/abandon")
+async def abandon_evaluation(
+    evaluation_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Abandon an in-progress evaluation so the user can start a new one."""
+    result = await db.execute(
+        select(Evaluation).where(
+            Evaluation.id == evaluation_id,
+            Evaluation.user_id == user.id,
+        )
+    )
+    evaluation = result.scalar_one_or_none()
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Évaluation introuvable")
+    if evaluation.status != EvaluationStatus.IN_PROGRESS:
+        raise HTTPException(status_code=400, detail="Cette évaluation n'est pas en cours")
+
+    evaluation.status = EvaluationStatus.ABANDONED
+    evaluation.completed_at = datetime.now(timezone.utc)
+    await db.flush()
+    return {"detail": "Évaluation abandonnée"}

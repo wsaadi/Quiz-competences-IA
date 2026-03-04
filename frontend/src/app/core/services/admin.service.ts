@@ -29,6 +29,28 @@ export interface GlobalStats {
   score_distribution: Record<string, number>;
   level_distribution: Record<string, number>;
   domain_averages: Record<string, number>;
+  total_users: number;
+}
+
+export interface CollaborateurFiche {
+  collaborateur: {
+    id: number;
+    nom: string;
+    email: string;
+    username: string;
+    role: string;
+  };
+  evaluations: Array<{
+    id: number;
+    date: string | null;
+    job_role: string | null;
+    job_domain: string | null;
+    detected_level: string | null;
+    score_global: number | null;
+    scores: Record<string, number | null>;
+    feedback_collaborateur: string | null;
+    feedback_admin: string | null;
+  }>;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -61,5 +83,24 @@ export class AdminService {
 
   getStats(): Observable<GlobalStats> {
     return this.http.get<GlobalStats>(`${environment.apiUrl}/admin/stats`);
+  }
+
+  exportEvaluationsCSV(): void {
+    this.http.get(`${environment.apiUrl}/admin/export/evaluations/csv`, {
+      responseType: 'blob',
+    }).subscribe((blob) => {
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `evaluations_ia_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    });
+  }
+
+  getCollaborateurFiche(userId: number): Observable<CollaborateurFiche> {
+    return this.http.get<CollaborateurFiche>(
+      `${environment.apiUrl}/admin/export/collaborateur/${userId}`
+    );
   }
 }

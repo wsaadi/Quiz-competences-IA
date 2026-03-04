@@ -35,8 +35,10 @@ class Evaluation(Base):
     score_conception_dev: Mapped[float | None] = mapped_column(Float, nullable=True)
     score_global: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # Detected level
+    # Detected level and job context
     detected_level: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    job_role: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    job_domain: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     # Feedback
     feedback_collaborator: Mapped[str | None] = mapped_column(Text, nullable=True)

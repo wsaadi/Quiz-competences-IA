@@ -18,7 +18,7 @@ class TokenResponse(BaseModel):
 
 # ── Users ─────────────────────────────────────────────────────────────
 class UserCreate(BaseModel):
-    email: str = Field(..., max_length=255)
+    email: EmailStr = Field(...)
     username: str = Field(..., min_length=3, max_length=100)
     full_name: str = Field(..., min_length=1, max_length=200)
     password: str = Field(..., min_length=8)
@@ -75,6 +75,8 @@ class EvaluationOut(BaseModel):
     started_at: datetime
     completed_at: datetime | None = None
     detected_level: str | None = None
+    job_role: str | None = None
+    job_domain: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -102,3 +104,4 @@ class GlobalStats(BaseModel):
     score_distribution: dict
     level_distribution: dict
     domain_averages: dict
+    total_users: int = 0

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, retry, timer } from 'rxjs';
 import { environment } from '../../../environments/environment';
 
 export interface ChatResponse {
@@ -34,6 +34,8 @@ export interface Evaluation {
   started_at: string;
   completed_at: string | null;
   detected_level: string | null;
+  job_role: string | null;
+  job_domain: string | null;
 }
 
 export interface EvaluationDetail extends Evaluation {
@@ -53,25 +55,37 @@ export interface ChatMessageRecord {
 export class EvaluationService {
   constructor(private http: HttpClient) {}
 
+  private retryConfig = {
+    count: 2,
+    delay: (error: any, retryCount: number) => {
+      // Only retry on network errors and 5xx, not 4xx
+      const status = error?.status;
+      if (status && status >= 400 && status < 500) {
+        throw error;
+      }
+      return timer(2000 * retryCount);
+    },
+  };
+
   startEvaluation(): Observable<ChatResponse> {
     return this.http.post<ChatResponse>(
       `${environment.apiUrl}/evaluations/start`,
       {}
-    );
+    ).pipe(retry(this.retryConfig));
   }
 
   sendMessage(evaluationId: number, message: string): Observable<ChatResponse> {
     return this.http.post<ChatResponse>(
       `${environment.apiUrl}/evaluations/${evaluationId}/chat`,
       { message }
-    );
+    ).pipe(retry(this.retryConfig));
   }
 
   completeEvaluation(evaluationId: number): Observable<Evaluation> {
     return this.http.post<Evaluation>(
       `${environment.apiUrl}/evaluations/${evaluationId}/complete`,
       {}
-    );
+    ).pipe(retry(this.retryConfig));
   }
 
   getMyEvaluations(): Observable<Evaluation[]> {
@@ -85,6 +99,13 @@ export class EvaluationService {
   getMessages(evaluationId: number): Observable<ChatMessageRecord[]> {
     return this.http.get<ChatMessageRecord[]>(
       `${environment.apiUrl}/evaluations/${evaluationId}/messages`
+    );
+  }
+
+  abandonEvaluation(evaluationId: number): Observable<any> {
+    return this.http.post(
+      `${environment.apiUrl}/evaluations/${evaluationId}/abandon`,
+      {}
     );
   }
 }
