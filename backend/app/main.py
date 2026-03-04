@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.core.database import init_db
 from app.core.security import get_password_hash
 from app.models.user import User, UserRole
-from app.routers import auth, evaluation, admin
+from app.routers import auth, evaluation, admin, tts
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -65,6 +65,7 @@ async def add_security_headers(request: Request, call_next):
 app.include_router(auth.router, prefix="/api")
 app.include_router(evaluation.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(tts.router, prefix="/api")
 
 
 @app.get("/api/health")

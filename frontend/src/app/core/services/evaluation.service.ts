@@ -111,7 +111,7 @@ export class EvaluationService {
 
   textToSpeech(text: string): Observable<Blob> {
     return this.http.post(
-      `${environment.apiUrl}/evaluations/tts`,
+      `${environment.apiUrl}/tts/speak`,
       { text },
       { responseType: 'blob' }
     );
