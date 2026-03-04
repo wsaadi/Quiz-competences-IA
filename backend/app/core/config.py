@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # Database
-    DATABASE_URL: str = "sqlite+aiosqlite:///./quiz_ia.db"
+    DATABASE_URL: str = "sqlite+aiosqlite:///./data/quiz_ia.db"
 
     # JWT
     SECRET_KEY: str = secrets.token_urlsafe(64)

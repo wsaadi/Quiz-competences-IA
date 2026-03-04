@@ -1,6 +1,7 @@
 """Quiz Compétences IA — FastAPI application entry point."""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
@@ -25,6 +26,7 @@ limiter = Limiter(key_func=get_remote_address)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Quiz Compétences IA...")
+    os.makedirs("data", exist_ok=True)
     await init_db()
     await _seed_admin()
     yield
