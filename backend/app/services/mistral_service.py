@@ -1,5 +1,6 @@
 """Mistral AI evaluation service — adaptive AI skills assessment engine."""
 
+import asyncio
 import json
 import logging
 
@@ -89,8 +90,8 @@ Quand la phase est SCORING (dernière interaction), le JSON doit contenir les sc
 """
 
 
-async def call_mistral(messages: list[dict]) -> str:
-    """Call Mistral AI chat completion API."""
+async def call_mistral(messages: list[dict], max_retries: int = 3) -> str:
+    """Call Mistral AI chat completion API with retry on transient errors."""
     headers = {
         "Authorization": f"Bearer {settings.MISTRAL_API_KEY}",
         "Content-Type": "application/json",
@@ -103,10 +104,22 @@ async def call_mistral(messages: list[dict]) -> str:
     }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(MISTRAL_CHAT_URL, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+        for attempt in range(max_retries + 1):
+            try:
+                response = await client.post(MISTRAL_CHAT_URL, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (429, 502, 503, 504) and attempt < max_retries:
+                    delay = 2 ** (attempt + 1)
+                    logger.warning(
+                        "Mistral API returned %s, retrying in %ds (attempt %d/%d)",
+                        exc.response.status_code, delay, attempt + 1, max_retries,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    raise
 
 
 def parse_eval_meta(response_text: str) -> tuple[dict | None, str]:
