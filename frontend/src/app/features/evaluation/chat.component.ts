@@ -5,6 +5,7 @@ import {
   ViewChild,
   ElementRef,
   AfterViewChecked,
+  OnInit,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -97,7 +98,7 @@ interface ChatMsg {
       <main class="chat-main">
         <div class="messages-container" #scrollContainer>
           <!-- Starting state -->
-          <div class="start-screen" *ngIf="!evaluationId() && !starting()">
+          <div class="start-screen" *ngIf="!evaluationId() && !starting() && !resuming()">
             <app-avatar [size]="120" mood="happy"></app-avatar>
             <h2>Prêt pour l'évaluation ?</h2>
             <p>
@@ -111,9 +112,9 @@ interface ChatMsg {
             </button>
           </div>
 
-          <div class="loading-start" *ngIf="starting()">
+          <div class="loading-start" *ngIf="starting() || resuming()">
             <mat-spinner diameter="40"></mat-spinner>
-            <p>Aria se prépare...</p>
+            <p>{{ resuming() ? 'Reprise de la conversation...' : 'Aria se prépare...' }}</p>
           </div>
 
           <!-- Messages -->
@@ -143,6 +144,18 @@ interface ChatMsg {
               <span class="dot"></span>
               <span class="dot"></span>
             </div>
+          </div>
+
+          <!-- Error banner with retry -->
+          <div class="error-banner" *ngIf="errorMessage()">
+            <mat-icon>warning</mat-icon>
+            <span>{{ errorMessage() }}</span>
+            <button mat-stroked-button (click)="retryLastMessage()">
+              <mat-icon>refresh</mat-icon> Réessayer
+            </button>
+            <button mat-icon-button (click)="dismissError()">
+              <mat-icon>close</mat-icon>
+            </button>
           </div>
         </div>
 
@@ -346,6 +359,22 @@ interface ChatMsg {
     .dot:nth-child(2) { animation-delay: 0.16s; }
     .dot:nth-child(3) { animation-delay: 0.32s; }
 
+    .error-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      background: #fff3e0;
+      border: 1px solid #FFB74D;
+      border-radius: 12px;
+      color: #E65100;
+      font-size: 13px;
+
+      mat-icon:first-child { color: #FF9800; }
+      span { flex: 1; }
+      button { flex-shrink: 0; }
+    }
+
     .input-area {
       display: flex;
       gap: 12px;
@@ -384,7 +413,7 @@ interface ChatMsg {
     }
   `],
 })
-export class ChatComponent implements AfterViewChecked {
+export class ChatComponent implements AfterViewChecked, OnInit {
   @ViewChild('scrollContainer') scrollContainer!: ElementRef;
 
   messages = signal<ChatMsg[]>([]);
@@ -392,10 +421,14 @@ export class ChatComponent implements AfterViewChecked {
   userMessage = '';
   sending = signal(false);
   starting = signal(false);
+  resuming = signal(false);
   isComplete = signal(false);
   progress = signal(0);
   currentPhase = signal('ACCUEIL');
   avatarMood = signal<'neutral' | 'happy' | 'thinking' | 'encouraging'>('happy');
+  errorMessage = signal<string | null>(null);
+
+  private lastFailedMessage = '';
 
   userName = computed(() => this.authService.currentUser()?.fullName ?? 'Collaborateur');
 
@@ -419,6 +452,11 @@ export class ChatComponent implements AfterViewChecked {
     private router: Router
   ) {}
 
+  ngOnInit(): void {
+    // Auto-resume any in-progress evaluation
+    this.tryResumeExisting();
+  }
+
   ngAfterViewChecked(): void {
     if (this.shouldScroll) {
       this.scrollToBottom();
@@ -426,13 +464,43 @@ export class ChatComponent implements AfterViewChecked {
     }
   }
 
+  private tryResumeExisting(): void {
+    this.resuming.set(true);
+    this.evaluationService.getMyEvaluations().subscribe({
+      next: (evals) => {
+        const active = evals.find((e) => e.status === 'in_progress');
+        if (active) {
+          this.evaluationId.set(active.id);
+          this.evaluationService.getMessages(active.id).subscribe({
+            next: (msgs) => {
+              this.resuming.set(false);
+              if (msgs.length > 0) {
+                this.messages.set(
+                  msgs.map((m) => ({
+                    role: m.role as 'user' | 'assistant',
+                    content: m.content,
+                    timestamp: new Date(m.created_at),
+                  }))
+                );
+                this.shouldScroll = true;
+              }
+            },
+            error: () => this.resuming.set(false),
+          });
+        } else {
+          this.resuming.set(false);
+        }
+      },
+      error: () => this.resuming.set(false),
+    });
+  }
+
   startEvaluation(): void {
     this.starting.set(true);
+    this.errorMessage.set(null);
     this.evaluationService.startEvaluation().subscribe({
       next: (res) => {
         this.starting.set(false);
-        // Parse evaluation ID from location or use 1 for first
-        // We need to get the evaluation ID — fetch from my evaluations
         this.evaluationService.getMyEvaluations().subscribe((evals) => {
           const active = evals.find((e) => e.status === 'in_progress');
           if (active) {
@@ -453,23 +521,9 @@ export class ChatComponent implements AfterViewChecked {
         this.starting.set(false);
         const detail = err.error?.detail;
         if (typeof detail === 'string' && detail.includes('déjà en cours')) {
-          // Resume existing evaluation
-          this.evaluationService.getMyEvaluations().subscribe((evals) => {
-            const active = evals.find((e) => e.status === 'in_progress');
-            if (active) {
-              this.evaluationId.set(active.id);
-              this.evaluationService.getMessages(active.id).subscribe((msgs) => {
-                this.messages.set(
-                  msgs.map((m) => ({
-                    role: m.role as 'user' | 'assistant',
-                    content: m.content,
-                    timestamp: new Date(m.created_at),
-                  }))
-                );
-                this.shouldScroll = true;
-              });
-            }
-          });
+          this.tryResumeExisting();
+        } else {
+          this.errorMessage.set('Impossible de démarrer l\'évaluation. Vérifie ta connexion.');
         }
       },
     });
@@ -479,6 +533,7 @@ export class ChatComponent implements AfterViewChecked {
     const text = this.userMessage.trim();
     if (!text || !this.evaluationId() || this.sending()) return;
 
+    this.errorMessage.set(null);
     this.messages.update((m) => [
       ...m,
       { role: 'user', content: text, timestamp: new Date() },
@@ -491,6 +546,7 @@ export class ChatComponent implements AfterViewChecked {
     this.evaluationService.sendMessage(this.evaluationId()!, text).subscribe({
       next: (res) => {
         this.sending.set(false);
+        this.lastFailedMessage = '';
         this.messages.update((m) => [
           ...m,
           { role: 'assistant', content: res.response, timestamp: new Date() },
@@ -504,17 +560,30 @@ export class ChatComponent implements AfterViewChecked {
       error: () => {
         this.sending.set(false);
         this.avatarMood.set('neutral');
-        this.messages.update((m) => [
-          ...m,
-          {
-            role: 'assistant',
-            content: 'Oups, une petite erreur technique ! Réessaye dans quelques secondes.',
-            timestamp: new Date(),
-          },
-        ]);
+        // Save failed message for retry and remove user bubble
+        this.lastFailedMessage = text;
+        this.messages.update((m) => m.slice(0, -1));
+        this.errorMessage.set('Erreur de connexion. Clique sur Réessayer ou renvoie ton message.');
         this.shouldScroll = true;
       },
     });
+  }
+
+  retryLastMessage(): void {
+    if (this.lastFailedMessage) {
+      this.errorMessage.set(null);
+      this.userMessage = this.lastFailedMessage;
+      this.lastFailedMessage = '';
+      this.sendMessage();
+    }
+  }
+
+  dismissError(): void {
+    this.errorMessage.set(null);
+    if (this.lastFailedMessage) {
+      this.userMessage = this.lastFailedMessage;
+      this.lastFailedMessage = '';
+    }
   }
 
   endEvaluation(): void {
@@ -532,6 +601,7 @@ export class ChatComponent implements AfterViewChecked {
       error: () => {
         this.sending.set(false);
         this.avatarMood.set('neutral');
+        this.errorMessage.set('Impossible de terminer l\'évaluation. Réessaye.');
       },
     });
   }
@@ -541,7 +611,6 @@ export class ChatComponent implements AfterViewChecked {
   }
 
   formatMessage(content: string): string {
-    // Basic markdown-like formatting
     return content
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.*?)\*/g, '<em>$1</em>')
