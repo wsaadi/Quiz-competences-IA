@@ -8,7 +8,19 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-engine = create_async_engine(settings.DATABASE_URL, echo=settings.DEBUG)
+# Build engine with appropriate pooling config
+_engine_kwargs: dict = {"echo": settings.DEBUG}
+
+if settings.DATABASE_URL.startswith("postgresql"):
+    # PostgreSQL: configure connection pool for concurrent users
+    _engine_kwargs.update({
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+        "pool_pre_ping": True,  # Verify connections are alive before use
+        "pool_recycle": 300,  # Recycle connections after 5 min
+    })
+
+engine = create_async_engine(settings.DATABASE_URL, **_engine_kwargs)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

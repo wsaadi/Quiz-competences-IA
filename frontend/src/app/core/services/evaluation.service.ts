@@ -116,4 +116,24 @@ export class EvaluationService {
       { responseType: 'blob' }
     );
   }
+
+  /** Returns TTS endpoint URL and current auth token for direct fetch() streaming. */
+  getTTSStreamInfo(): { url: string; token: string | null } {
+    const session = sessionStorage.getItem('quiz_ia_session');
+    let token: string | null = null;
+    if (session) {
+      try { token = JSON.parse(session).token; } catch {}
+    }
+    return { url: `${environment.apiUrl}/tts/speak`, token };
+  }
+
+  /** Transcribe audio via ElevenLabs Scribe (server-side STT). */
+  transcribeAudio(audioBlob: Blob, filename: string = 'audio.webm'): Observable<{ text: string }> {
+    const formData = new FormData();
+    formData.append('file', audioBlob, filename);
+    return this.http.post<{ text: string }>(
+      `${environment.apiUrl}/tts/transcribe`,
+      formData
+    );
+  }
 }

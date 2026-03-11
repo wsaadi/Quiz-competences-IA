@@ -3,10 +3,14 @@ services:
     build: ./backend
     container_name: quiz-ia-backend
     env_file: ./backend/.env
+    environment:
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-1}
     ports:
       - "8001:8001"
     volumes:
       - db-data:/app/data
+    depends_on:
+      - redis
     restart: unless-stopped
 
   frontend:
@@ -18,5 +22,31 @@ services:
       - backend
     restart: unless-stopped
 
+  # Redis for rate limiting & shared state across workers
+  redis:
+    image: redis:7-alpine
+    container_name: quiz-ia-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  # PostgreSQL — uncomment for production (also set DATABASE_URL in .env)
+  # db:
+  #   image: postgres:16-alpine
+  #   container_name: quiz-ia-db
+  #   environment:
+  #     POSTGRES_USER: quiz_ia
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+  #     POSTGRES_DB: quiz_ia
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pg-data:/var/lib/postgresql/data
+  #   restart: unless-stopped
+
 volumes:
   db-data:
+  redis-data:
+  # pg-data:

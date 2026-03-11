@@ -1,0 +1,39 @@
+## Production override — 30-50 concurrent users
+## Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+##
+## Required .env variables:
+##   DATABASE_URL=postgresql+asyncpg://quiz_ia:<password>@db:5432/quiz_ia
+##   REDIS_URL=redis://redis:6379/0
+##   UVICORN_WORKERS=4
+##   SECRET_KEY=<random-64-char-string>
+##   MISTRAL_API_KEY=<key>
+##   ELEVENLABS_API_KEY=<key>
+##   POSTGRES_PASSWORD=<password>
+
+services:
+  backend:
+    environment:
+      - UVICORN_WORKERS=4
+      - DATABASE_URL=postgresql+asyncpg://quiz_ia:${POSTGRES_PASSWORD}@db:5432/quiz_ia
+      - REDIS_URL=redis://redis:6379/0
+      - DB_POOL_SIZE=10
+      - DB_MAX_OVERFLOW=20
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: postgres:16-alpine
+    container_name: quiz-ia-db
+    environment:
+      POSTGRES_USER: quiz_ia
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: quiz_ia
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  pg-data:

@@ -20,7 +20,11 @@ from app.routers import auth, evaluation, admin, tts
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-limiter = Limiter(key_func=get_remote_address)
+# Rate limiter: use Redis when configured (multi-worker safe), else in-memory
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri=settings.REDIS_URL or None,
+)
 
 
 @asynccontextmanager
@@ -30,6 +34,10 @@ async def lifespan(app: FastAPI):
     await init_db()
     await _seed_admin()
     yield
+    # Cleanup shared httpx client for TTS/STT
+    from app.routers.tts import _http_client
+    if _http_client and not _http_client.is_closed:
+        await _http_client.aclose()
     logger.info("Shutting down...")
 
 
