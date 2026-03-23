@@ -317,7 +317,15 @@ def split_into_sentences(text: str) -> tuple[list[str], str]:
 
 
 def parse_eval_meta(response_text: str) -> tuple[dict | None, str]:
-    """Extract evaluation metadata JSON from the response and return (meta, clean_message)."""
+    """Extract evaluation metadata JSON from the response and return (meta, clean_message).
+
+    Handles multiple failure modes:
+    - Missing closing tag: tries to find JSON from opening tag to end of string
+    - No tags at all: tries to detect raw JSON blocks
+    - Malformed JSON: strips it and returns the conversational part only
+    """
+    import re
+
     meta = None
     clean_message = response_text
 
@@ -328,6 +336,7 @@ def parse_eval_meta(response_text: str) -> tuple[dict | None, str]:
     end_idx = response_text.find(end_tag)
 
     if start_idx != -1 and end_idx != -1:
+        # Happy path: both tags present
         json_str = response_text[start_idx + len(start_tag):end_idx].strip()
         try:
             meta = json.loads(json_str)
@@ -337,6 +346,53 @@ def parse_eval_meta(response_text: str) -> tuple[dict | None, str]:
         clean_message = (
             response_text[:start_idx] + response_text[end_idx + len(end_tag):]
         ).strip()
+
+    elif start_idx != -1 and end_idx == -1:
+        # Opening tag but no closing tag — try to extract JSON anyway
+        remainder = response_text[start_idx + len(start_tag):].strip()
+        # Find the first { ... } block
+        brace_start = remainder.find("{")
+        if brace_start != -1:
+            depth = 0
+            for i, ch in enumerate(remainder[brace_start:], brace_start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        json_str = remainder[brace_start:i + 1]
+                        try:
+                            meta = json.loads(json_str)
+                        except json.JSONDecodeError:
+                            logger.warning("Failed to parse eval_meta JSON (no closing tag): %s", json_str)
+                        break
+
+        # Remove everything from the start tag onward
+        clean_message = response_text[:start_idx].strip()
+
+    else:
+        # No tags at all — check for raw JSON block that looks like eval metadata
+        json_pattern = re.search(
+            r'\{[^{}]*"phase"\s*:\s*"[A-Z]+"[^{}]*\}',
+            response_text,
+        )
+        if json_pattern:
+            try:
+                meta = json.loads(json_pattern.group())
+            except json.JSONDecodeError:
+                pass
+            # Remove the JSON block from the message
+            clean_message = (
+                response_text[:json_pattern.start()] + response_text[json_pattern.end():]
+            ).strip()
+
+    # Final safety: strip any remaining JSON-like blocks or tags from clean_message
+    clean_message = re.sub(r'</?eval_meta>', '', clean_message)
+    clean_message = re.sub(
+        r'\{[^{}]*"phase"\s*:\s*"[A-Z]+"[^{}]*\}',
+        '',
+        clean_message,
+    ).strip()
 
     return meta, clean_message
 

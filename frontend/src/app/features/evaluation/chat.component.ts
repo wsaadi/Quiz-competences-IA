@@ -738,6 +738,10 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
       });
 
       if (!response.ok || !response.body) {
+        if (response.status === 401) {
+          this.authService.logout();
+          return;
+        }
         throw new Error(`Stream failed: ${response.status}`);
       }
 
