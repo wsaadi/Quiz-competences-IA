@@ -281,20 +281,44 @@ async def chat_stream(
         full_response = ""
         sentence_buffer = ""
         sentence_index = 0
+        inside_meta = False  # Track whether we're inside <eval_meta> block
 
         async for chunk in stream_mistral(messages):
             full_response += chunk
             sentence_buffer += chunk
 
-            # Split at sentence boundaries and emit each sentence immediately
+            # If we encounter <eval_meta>, stop emitting sentences
+            if "<eval_meta" in sentence_buffer:
+                inside_meta = True
+                # Emit anything before the tag
+                before_tag = sentence_buffer[:sentence_buffer.find("<eval_meta")]
+                if before_tag.strip():
+                    completed, leftover = split_into_sentences(before_tag)
+                    for sentence in completed:
+                        event_data = json.dumps({"text": sentence, "index": sentence_index}, ensure_ascii=False)
+                        yield f"event: sentence\ndata: {event_data}\n\n"
+                        sentence_index += 1
+                    if leftover.strip():
+                        event_data = json.dumps({"text": leftover.strip(), "index": sentence_index}, ensure_ascii=False)
+                        yield f"event: sentence\ndata: {event_data}\n\n"
+                        sentence_index += 1
+                sentence_buffer = ""
+                continue
+
+            if inside_meta:
+                # Swallow everything inside the meta block
+                sentence_buffer = ""
+                continue
+
+            # Normal path: split at sentence boundaries and emit
             completed, sentence_buffer = split_into_sentences(sentence_buffer)
             for sentence in completed:
                 event_data = json.dumps({"text": sentence, "index": sentence_index}, ensure_ascii=False)
                 yield f"event: sentence\ndata: {event_data}\n\n"
                 sentence_index += 1
 
-        # Emit remaining buffer
-        if sentence_buffer.strip():
+        # Emit remaining buffer (only if not inside meta block)
+        if not inside_meta and sentence_buffer.strip():
             event_data = json.dumps({"text": sentence_buffer.strip(), "index": sentence_index}, ensure_ascii=False)
             yield f"event: sentence\ndata: {event_data}\n\n"
 
