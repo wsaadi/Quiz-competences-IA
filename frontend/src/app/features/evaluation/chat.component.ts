@@ -171,8 +171,16 @@ interface ChatMsg {
             </div>
           </div>
 
-          <!-- Typing indicator -->
-          <div class="message ai-msg" *ngIf="sending()">
+          <!-- Streaming response (displayed progressively) -->
+          <div class="message ai-msg" *ngIf="streamingResponse()">
+            <app-avatar [size]="36" mood="thinking" class="msg-avatar"></app-avatar>
+            <div class="msg-bubble">
+              <div class="msg-content" [innerHTML]="formatMessage(streamingResponse())"></div>
+            </div>
+          </div>
+
+          <!-- Typing indicator (only when sending and no streaming text yet) -->
+          <div class="message ai-msg" *ngIf="sending() && !streamingResponse()">
             <app-avatar [size]="36" mood="thinking" class="msg-avatar"></app-avatar>
             <div class="msg-bubble typing">
               <span class="dot"></span>
@@ -550,6 +558,9 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   private speechStartTime = 0;
   private recordingStartTime = 0;
 
+  // Streaming response displayed progressively in the UI
+  streamingResponse = signal('');
+
   // TTS sentence queue for streaming pipeline
   private ttsSentenceQueue: string[] = [];
   private ttsPlaying = false;
@@ -720,6 +731,7 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     this.streamAbortController = new AbortController();
     this.ttsSentenceQueue = [];
     this.ttsPlaying = false;
+    this.streamingResponse.set('');
     let fullResponse = '';
 
     try {
@@ -759,18 +771,22 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
               const parsed = JSON.parse(data);
 
               if (eventType === 'sentence') {
-                // Queue sentence for TTS and start playing immediately
+                // Display sentence progressively + queue for TTS
                 const sentenceText = parsed.text;
                 if (sentenceText) {
+                  fullResponse += (fullResponse ? ' ' : '') + sentenceText;
+                  this.streamingResponse.set(fullResponse);
+                  this.shouldScroll = true;
                   this.enqueueTTSSentence(sentenceText);
                 }
               } else if (eventType === 'done') {
-                fullResponse = parsed.response || '';
+                const finalResponse = parsed.response || fullResponse;
+                this.streamingResponse.set('');
                 this.sending.set(false);
                 this.lastFailedMessage = '';
                 this.messages.update((m) => [
                   ...m,
-                  { role: 'assistant', content: fullResponse, timestamp: new Date() },
+                  { role: 'assistant', content: finalResponse, timestamp: new Date() },
                 ]);
                 this.progress.set(parsed.progress_percent || 50);
                 this.currentPhase.set(parsed.phase || 'EXPLORATION');
@@ -786,6 +802,7 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
         }
       }
     } catch (err: any) {
+      this.streamingResponse.set('');
       if (err?.name === 'AbortError') return;
       // Fallback to classic non-streaming endpoint
       this.sendMessageClassic(text);
@@ -1045,12 +1062,22 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
           this.userMessage = this.userMessage
             ? this.userMessage + ' ' + result.text.trim()
             : result.text.trim();
-          // Auto-send the transcribed message
-          this.sendMessage();
+          // Auto-send: if currently sending, wait for it to finish then send
+          if (this.sending()) {
+            const waitAndSend = setInterval(() => {
+              if (!this.sending()) {
+                clearInterval(waitAndSend);
+                this.sendMessage();
+              }
+            }, 200);
+          } else {
+            this.sendMessage();
+          }
         }
       },
       error: () => {
         this.isTranscribing.set(false);
+        this.errorMessage.set('Erreur de transcription. Réessaie ou tape ton message.');
       },
     });
   }
