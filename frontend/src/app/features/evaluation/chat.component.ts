@@ -1114,12 +1114,47 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
 
     try {
       await this.speakWithStreaming(sentence);
-    } catch {
-      // Continue with next sentence on error
+    } catch (err: any) {
+      if (err?.message === 'Autoplay blocked') {
+        // Browser blocked autoplay — try blob fallback for remaining sentences
+        console.warn('TTS autoplay blocked, switching to blob fallback');
+        await this.tryBlobFallbackForQueue(sentence);
+        return;
+      }
+      // Other error — continue with next sentence
     }
 
     // Play next sentence in queue
     this.playNextSentence();
+  }
+
+  /** When streaming audio is blocked by autoplay, try the blob path */
+  private async tryBlobFallbackForQueue(currentSentence: string): Promise<void> {
+    const allSentences = [currentSentence, ...this.ttsSentenceQueue];
+    this.ttsSentenceQueue = [];
+
+    for (const sentence of allSentences) {
+      try {
+        const { url, token } = this.evaluationService.getTTSStreamInfo();
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ text: sentence }),
+        });
+        if (response.ok) {
+          const blob = await response.blob();
+          await this.playBlobAudio(blob);
+        }
+      } catch {
+        // Skip sentence on error
+      }
+    }
+
+    this.ttsPlaying = false;
+    this.isSpeaking.set(false);
   }
 
   // ── Text-to-Speech (streaming ElevenLabs) ──
@@ -1131,7 +1166,9 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     }
 
     this.isSpeaking.set(true);
-    this.speakWithStreaming(text);
+    this.speakWithStreaming(text).catch(() => {
+      this.isSpeaking.set(false);
+    });
   }
 
   private async speakWithStreaming(text: string): Promise<void> {
@@ -1161,8 +1198,8 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
       }
     } catch (err: any) {
       if (err?.name === 'AbortError') return;
-      // No browser fallback — ElevenLabs only as requested
-      this.isSpeaking.set(false);
+      // Re-throw so playNextSentence can handle (e.g. autoplay blocked)
+      throw err;
     }
   }
 
@@ -1177,11 +1214,33 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
       audio.src = URL.createObjectURL(mediaSource);
       this.currentAudio = audio;
 
+      const cleanup = () => {
+        URL.revokeObjectURL(audio.src);
+        this.currentAudio = null;
+      };
+
+      audio.onended = () => {
+        this.isSpeaking.set(false);
+        cleanup();
+        resolve();
+      };
+
+      audio.onerror = () => {
+        cleanup();
+        reject(new Error('Audio playback error'));
+      };
+
       mediaSource.addEventListener('sourceopen', async () => {
         const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
         const reader = body.getReader();
         const pendingChunks: Uint8Array[] = [];
         let streamDone = false;
+
+        const tryEndOfStream = () => {
+          if (streamDone && pendingChunks.length === 0 && !sourceBuffer.updating && mediaSource.readyState === 'open') {
+            try { mediaSource.endOfStream(); } catch {}
+          }
+        };
 
         const appendNext = () => {
           if (sourceBuffer.updating || pendingChunks.length === 0) return;
@@ -1195,9 +1254,7 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
 
         sourceBuffer.addEventListener('updateend', () => {
           appendNext();
-          if (streamDone && pendingChunks.length === 0 && mediaSource.readyState === 'open') {
-            try { mediaSource.endOfStream(); } catch {}
-          }
+          tryEndOfStream();
         });
 
         try {
@@ -1205,16 +1262,21 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
             const { done, value } = await reader.read();
             if (done) {
               streamDone = true;
-              if (!sourceBuffer.updating && pendingChunks.length === 0 && mediaSource.readyState === 'open') {
-                try { mediaSource.endOfStream(); } catch {}
-              }
+              tryEndOfStream();
               break;
             }
             pendingChunks.push(value);
             appendNext();
 
             if (audio.paused) {
-              audio.play().catch(() => {});
+              try {
+                await audio.play();
+              } catch {
+                // Autoplay blocked — abort streaming and reject
+                cleanup();
+                reject(new Error('Autoplay blocked'));
+                return;
+              }
             }
           }
         } catch (err) {
@@ -1222,18 +1284,14 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
           return;
         }
 
-        audio.onended = () => {
-          this.isSpeaking.set(false);
-          URL.revokeObjectURL(audio.src);
-          this.currentAudio = null;
-          resolve();
-        };
-
-        audio.onerror = () => {
-          URL.revokeObjectURL(audio.src);
-          this.currentAudio = null;
-          reject(new Error('Audio playback error'));
-        };
+        // Safety: if stream is done but audio duration is 0 or very short,
+        // onended might not fire. Set a timeout fallback.
+        setTimeout(() => {
+          if (this.currentAudio === audio) {
+            cleanup();
+            resolve();
+          }
+        }, 30000); // 30s max per sentence
       });
     });
   }
