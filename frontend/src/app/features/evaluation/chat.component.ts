@@ -542,9 +542,12 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   private vadStream: MediaStream | null = null;
   private vadCheckInterval: any = null;
   private silenceStartTime = 0;
-  private readonly SILENCE_THRESHOLD = 15;      // RMS amplitude threshold (0-128)
-  private readonly SILENCE_DURATION_MS = 1500;   // 1.5s of silence → stop recording
-  private readonly MIN_RECORDING_MS = 500;       // Minimum recording duration
+  private speechDetected = false;               // Has the user actually spoken?
+  private readonly SILENCE_THRESHOLD = 8;        // RMS amplitude threshold (very low — only true silence)
+  private readonly SILENCE_DURATION_MS = 2500;   // 2.5s of sustained silence → stop recording
+  private readonly MIN_RECORDING_MS = 2000;      // Minimum 2s of recording before auto-stop
+  private readonly MIN_SPEECH_MS = 500;          // Must detect speech for at least 0.5s before enabling auto-stop
+  private speechStartTime = 0;
   private recordingStartTime = 0;
 
   // TTS sentence queue for streaming pipeline
@@ -917,19 +920,23 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
 
   /**
    * Voice Activity Detection: monitors audio amplitude and automatically
-   * stops recording after SILENCE_DURATION_MS of silence.
+   * stops recording only after the user has clearly spoken AND then gone
+   * silent for SILENCE_DURATION_MS. Very conservative to avoid cutting
+   * mid-sentence — natural speech pauses (1-2s) are expected in French.
    */
   private setupVAD(stream: MediaStream): void {
     try {
       this.audioContext = new AudioContext();
       const source = this.audioContext.createMediaStreamSource(stream);
       this.analyserNode = this.audioContext.createAnalyser();
-      this.analyserNode.fftSize = 512;
-      this.analyserNode.smoothingTimeConstant = 0.3;
+      this.analyserNode.fftSize = 1024;
+      this.analyserNode.smoothingTimeConstant = 0.5; // More smoothing to ignore micro-fluctuations
       source.connect(this.analyserNode);
 
       const dataArray = new Uint8Array(this.analyserNode.fftSize);
       this.silenceStartTime = 0;
+      this.speechDetected = false;
+      this.speechStartTime = 0;
 
       this.vadCheckInterval = setInterval(() => {
         if (!this.analyserNode || !this.isRecording()) {
@@ -950,20 +957,38 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
         const now = Date.now();
         const recordingDuration = now - this.recordingStartTime;
 
-        if (rms < this.SILENCE_THRESHOLD) {
+        if (rms >= this.SILENCE_THRESHOLD) {
+          // Sound detected — track that user has started speaking
+          this.silenceStartTime = 0;
+          if (!this.speechDetected) {
+            this.speechDetected = true;
+            this.speechStartTime = now;
+          }
+        } else {
+          // Silence detected
           if (this.silenceStartTime === 0) {
             this.silenceStartTime = now;
           }
-          const silenceDuration = now - this.silenceStartTime;
-          // Auto-stop if enough silence AND we've recorded enough audio
-          if (silenceDuration >= this.SILENCE_DURATION_MS && recordingDuration >= this.MIN_RECORDING_MS) {
-            this.stopRecording();
+
+          // Only consider auto-stop if ALL conditions are met:
+          // 1. User has actually spoken (speechDetected)
+          // 2. User spoke for at least MIN_SPEECH_MS
+          // 3. Total recording is at least MIN_RECORDING_MS
+          // 4. Silence has lasted at least SILENCE_DURATION_MS
+          if (this.speechDetected) {
+            const speechDuration = this.silenceStartTime - this.speechStartTime;
+            const silenceDuration = now - this.silenceStartTime;
+
+            if (
+              speechDuration >= this.MIN_SPEECH_MS &&
+              recordingDuration >= this.MIN_RECORDING_MS &&
+              silenceDuration >= this.SILENCE_DURATION_MS
+            ) {
+              this.stopRecording();
+            }
           }
-        } else {
-          // Reset silence timer when sound is detected
-          this.silenceStartTime = 0;
         }
-      }, 100); // Check every 100ms
+      }, 150); // Check every 150ms — less aggressive polling
     } catch {
       // VAD setup failed — recording still works, just no auto-stop
     }
