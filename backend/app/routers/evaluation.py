@@ -206,7 +206,8 @@ async def chat(
 
         evaluation.detected_level = meta.get("detected_level", "intermediaire")
         evaluation.feedback_collaborator = meta.get("feedback_collaborator", "")
-        evaluation.feedback_admin = meta.get("feedback_admin", "")
+        _fa = meta.get("feedback_admin", "")
+        evaluation.feedback_admin = json.dumps(_fa, ensure_ascii=False) if isinstance(_fa, dict) else _fa
         if meta.get("job_role"):
             evaluation.job_role = meta["job_role"]
         if meta.get("job_domain"):
@@ -281,7 +282,9 @@ async def chat_stream(
                 "L'évaluation est maintenant terminée. Génère le scoring final avec la phase SCORING. "
                 "Évalue chaque domaine de 0 à 100 en te basant sur TOUTE la conversation et en appliquant la GRILLE DE NOTATION STRICTE. "
                 "RAPPEL : connaître quelques termes = score 35-45 maximum. "
-                "Rédige un feedback_collaborator encourageant (3-5 phrases) et un feedback_admin détaillé (5-8 phrases). "
+                "Rédige un feedback_collaborator encourageant (3-5 phrases, texte simple). "
+                "Rédige un feedback_admin STRUCTURÉ en objet JSON conforme au format défini dans le system prompt "
+                "(synthese, domaines avec constats/points_forts/lacunes/recommandations, points_forts_globaux, axes_amelioration, plan_action). "
                 "Détermine le detected_level. Inclus job_role et job_domain."
             ),
         })
@@ -390,7 +393,8 @@ async def chat_stream(
                 ev.score_global = round(sum(all_scores) / len(all_scores), 1) if all_scores else 0
                 ev.detected_level = meta.get("detected_level", "intermediaire")
                 ev.feedback_collaborator = meta.get("feedback_collaborator", "")
-                ev.feedback_admin = meta.get("feedback_admin", "")
+                _fa = meta.get("feedback_admin", "")
+                ev.feedback_admin = json.dumps(_fa, ensure_ascii=False) if isinstance(_fa, dict) else _fa
                 if meta.get("job_role"):
                     ev.job_role = meta["job_role"]
                 if meta.get("job_domain"):
@@ -473,7 +477,8 @@ async def force_complete(
         evaluation.score_global = round(sum(all_scores) / len(all_scores), 1) if all_scores else 0
         evaluation.detected_level = meta.get("detected_level", "intermediaire")
         evaluation.feedback_collaborator = meta.get("feedback_collaborator", "")
-        evaluation.feedback_admin = meta.get("feedback_admin", "")
+        _fa = meta.get("feedback_admin", "")
+        evaluation.feedback_admin = json.dumps(_fa, ensure_ascii=False) if isinstance(_fa, dict) else _fa
         if meta.get("job_role"):
             evaluation.job_role = meta["job_role"]
         if meta.get("job_domain"):

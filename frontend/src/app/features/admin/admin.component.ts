@@ -271,9 +271,56 @@ import { environment } from '../../../environments/environment';
                             </div>
                           </div>
                           <div class="detail-right">
-                            <div class="feedback-block">
-                              <h4><mat-icon>admin_panel_settings</mat-icon> Feedback Admin</h4>
-                              <p class="admin-feedback">{{ ev.feedback_admin || 'Pas de feedback' }}</p>
+                            <div class="feedback-block" *ngIf="parseAdminFeedback(ev.feedback_admin) as fa">
+                              <h4><mat-icon>admin_panel_settings</mat-icon> Synthèse Admin</h4>
+
+                              <!-- Structured feedback -->
+                              <ng-container *ngIf="fa.structured; else plainFeedback">
+                                <p class="admin-synthese">{{ fa.data.synthese }}</p>
+
+                                <div class="admin-domain-detail" *ngFor="let d of getDomaineEntries(fa.data.domaines)">
+                                  <div class="add-header">
+                                    <span class="add-label">{{ getDomainLabel(d.key) }}</span>
+                                    <span class="add-score" [style.color]="getScoreColor(d.value.score)">
+                                      {{ d.value.score }}/100
+                                    </span>
+                                    <mat-chip class="add-niveau" [class]="'level-chip level-' + getLevelKey(d.value.niveau)">
+                                      {{ d.value.niveau }}
+                                    </mat-chip>
+                                  </div>
+                                  <div class="add-body">
+                                    <div class="add-row" *ngIf="d.value.constats">
+                                      <strong>Constats :</strong> {{ d.value.constats }}
+                                    </div>
+                                    <div class="add-row add-good" *ngIf="d.value.points_forts">
+                                      <strong>Points forts :</strong> {{ d.value.points_forts }}
+                                    </div>
+                                    <div class="add-row add-warn" *ngIf="d.value.lacunes">
+                                      <strong>Lacunes :</strong> {{ d.value.lacunes }}
+                                    </div>
+                                    <div class="add-row add-reco" *ngIf="d.value.recommandations">
+                                      <strong>Recommandations :</strong> {{ d.value.recommandations }}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div class="admin-global-section" *ngIf="fa.data.points_forts_globaux">
+                                  <h5><mat-icon>star</mat-icon> Points forts globaux</h5>
+                                  <p>{{ fa.data.points_forts_globaux }}</p>
+                                </div>
+                                <div class="admin-global-section" *ngIf="fa.data.axes_amelioration">
+                                  <h5><mat-icon>trending_up</mat-icon> Axes d'amélioration</h5>
+                                  <p>{{ fa.data.axes_amelioration }}</p>
+                                </div>
+                                <div class="admin-global-section" *ngIf="fa.data.plan_action">
+                                  <h5><mat-icon>school</mat-icon> Plan d'action recommandé</h5>
+                                  <p>{{ fa.data.plan_action }}</p>
+                                </div>
+                              </ng-container>
+
+                              <ng-template #plainFeedback>
+                                <p class="admin-feedback">{{ fa.data }}</p>
+                              </ng-template>
                             </div>
 
                             <div class="feedback-block">
@@ -441,8 +488,29 @@ import { environment } from '../../../environments/environment';
                         </div>
 
                         <div class="fiche-feedback" *ngIf="ev.feedback_admin">
-                          <h4><mat-icon>admin_panel_settings</mat-icon> Feedback admin</h4>
-                          <p>{{ ev.feedback_admin }}</p>
+                          <h4><mat-icon>admin_panel_settings</mat-icon> Synthèse admin</h4>
+                          <ng-container *ngIf="parseAdminFeedbackStr(ev.feedback_admin) as fa">
+                            <ng-container *ngIf="fa.structured; else fichePlain">
+                              <p class="admin-synthese">{{ fa.data.synthese }}</p>
+                              <div class="admin-domain-detail" *ngFor="let d of getDomaineEntries(fa.data.domaines)">
+                                <div class="add-header">
+                                  <span class="add-label">{{ getDomainLabel(d.key) }}</span>
+                                  <span class="add-score" [style.color]="getScoreColor(d.value.score)">{{ d.value.score }}/100</span>
+                                </div>
+                                <div class="add-body">
+                                  <div class="add-row" *ngIf="d.value.constats"><strong>Constats :</strong> {{ d.value.constats }}</div>
+                                  <div class="add-row add-good" *ngIf="d.value.points_forts"><strong>Points forts :</strong> {{ d.value.points_forts }}</div>
+                                  <div class="add-row add-warn" *ngIf="d.value.lacunes"><strong>Lacunes :</strong> {{ d.value.lacunes }}</div>
+                                  <div class="add-row add-reco" *ngIf="d.value.recommandations"><strong>Recommandations :</strong> {{ d.value.recommandations }}</div>
+                                </div>
+                              </div>
+                              <div *ngIf="fa.data.plan_action" class="admin-global-section">
+                                <h5><mat-icon>school</mat-icon> Plan d'action</h5>
+                                <p>{{ fa.data.plan_action }}</p>
+                              </div>
+                            </ng-container>
+                            <ng-template #fichePlain><p>{{ fa.data }}</p></ng-template>
+                          </ng-container>
                         </div>
 
                         <div class="fiche-conversation-actions">
@@ -887,6 +955,33 @@ import { environment } from '../../../environments/environment';
       h4 { display: flex; align-items: center; gap: 8px; color: #555; margin-bottom: 8px; }
     }
     .admin-feedback { background: #fff3e0; padding: 14px; border-radius: 10px; line-height: 1.6; font-size: 14px; }
+    .admin-synthese {
+      background: #fff3e0; padding: 14px; border-radius: 10px; line-height: 1.6; font-size: 14px;
+      margin-bottom: 16px; font-style: italic; border-left: 4px solid #ff9800;
+    }
+    .admin-domain-detail {
+      margin-bottom: 12px; border: 1px solid #e0e0e0; border-radius: 10px; overflow: hidden;
+    }
+    .add-header {
+      display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+      background: #fafafa; border-bottom: 1px solid #e0e0e0;
+    }
+    .add-label { font-weight: 600; font-size: 14px; flex: 1; }
+    .add-score { font-weight: 700; font-size: 15px; }
+    .add-niveau { font-size: 11px !important; min-height: 24px !important; }
+    .add-body { padding: 10px 14px; }
+    .add-row { font-size: 13px; line-height: 1.6; margin-bottom: 4px; }
+    .add-row strong { color: #555; }
+    .add-good strong { color: #2E7D32; }
+    .add-warn strong { color: #E65100; }
+    .add-reco strong { color: #1565C0; }
+    .admin-global-section {
+      margin-top: 12px; padding: 12px 14px; background: #f5f5f5; border-radius: 10px;
+    }
+    .admin-global-section h5 {
+      display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 14px; color: #333;
+    }
+    .admin-global-section p { font-size: 13px; line-height: 1.6; margin: 0; }
     .collab-feedback {
       background: #e8f5e9; padding: 14px; border-radius: 10px; line-height: 1.6; font-size: 14px;
       ::ng-deep {
@@ -1491,5 +1586,52 @@ export class AdminComponent implements OnInit {
 
   getObjectEntries(obj: Record<string, any> | null | undefined): [string, any][] {
     return obj ? Object.entries(obj) : [];
+  }
+
+  private domainLabels: Record<string, string> = {
+    market_knowledge: 'Connaissance marché',
+    terminology: 'Terminologie',
+    interest_curiosity: 'Intérêt & curiosité',
+    personal_watch: 'Veille personnelle',
+    technical_level: 'Niveau technique',
+    ai_usage: 'Utilisation IA',
+    integration_deployment: 'Intégration & déploiement',
+    conception_dev: 'Conception & dev',
+  };
+
+  getDomainLabel(key: string): string {
+    return this.domainLabels[key] || key;
+  }
+
+  getLevelKey(niveau: string): string {
+    const map: Record<string, string> = {
+      'Débutant': 'debutant', 'débutant': 'debutant', 'debutant': 'debutant',
+      'Intermédiaire': 'intermediaire', 'intermédiaire': 'intermediaire', 'intermediaire': 'intermediaire',
+      'Avancé': 'avance', 'avancé': 'avance', 'avance': 'avance',
+      'Expert': 'expert', 'expert': 'expert',
+    };
+    return map[niveau] || 'intermediaire';
+  }
+
+  getDomaineEntries(domaines: any): { key: string; value: any }[] {
+    if (!domaines || typeof domaines !== 'object') return [];
+    return Object.entries(domaines).map(([key, value]) => ({ key, value }));
+  }
+
+  parseAdminFeedback(raw: string | null | undefined): { structured: boolean; data: any } {
+    if (!raw) return { structured: false, data: 'Pas de feedback' };
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && parsed.domaines) {
+        return { structured: true, data: parsed };
+      }
+      return { structured: false, data: raw };
+    } catch {
+      return { structured: false, data: raw };
+    }
+  }
+
+  parseAdminFeedbackStr(raw: string | null | undefined): { structured: boolean; data: any } {
+    return this.parseAdminFeedback(raw);
   }
 }
