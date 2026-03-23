@@ -248,3 +248,37 @@ async def transcribe_audio(
     except httpx.HTTPError as e:
         logger.error("ElevenLabs STT connection error: %s", e)
         raise HTTPException(status_code=502, detail="Erreur de connexion au service de transcription")
+
+
+@router.post("/stt-token")
+async def get_stt_token(
+    _user: User = Depends(get_current_user),
+):
+    """Generate a single-use ElevenLabs token for realtime STT WebSocket.
+
+    The frontend connects directly to wss://api.elevenlabs.io with this
+    token, streaming audio chunks and receiving partial transcripts in
+    real time. Token expires after 15 minutes.
+    """
+    if not settings.ELEVENLABS_API_KEY:
+        raise HTTPException(status_code=501, detail="ElevenLabs API key not configured")
+
+    client = await _get_client()
+    try:
+        response = await client.post(
+            "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe",
+            headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
+        )
+
+        if response.status_code != 200:
+            logger.error("ElevenLabs single-use token error %s: %s", response.status_code, response.text[:200])
+            raise HTTPException(status_code=502, detail="Impossible de générer le token STT")
+
+        result = response.json()
+        return {"token": result.get("token", "")}
+
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Timeout du service ElevenLabs")
+    except httpx.HTTPError as e:
+        logger.error("ElevenLabs token error: %s", e)
+        raise HTTPException(status_code=502, detail="Erreur de connexion à ElevenLabs")

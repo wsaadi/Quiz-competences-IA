@@ -544,11 +544,12 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   private currentAudio: HTMLAudioElement | null = null;
   private ttsAbortController: AbortController | null = null;
 
-  // Voice Activity Detection (VAD) — passive only, no auto-stop
-  private audioContext: AudioContext | null = null;
-  private analyserNode: AnalyserNode | null = null;
-  private vadStream: MediaStream | null = null;
-  private vadCheckInterval: any = null;
+  // Real-time ElevenLabs STT WebSocket
+  private sttWebSocket: WebSocket | null = null;
+  private sttAudioContext: AudioContext | null = null;
+  private sttProcessor: ScriptProcessorNode | null = null;
+  private sttStream: MediaStream | null = null;
+  private sttCommittedText = '';  // Accumulated committed transcript
 
   // Streaming response displayed progressively in the UI
   streamingResponse = signal('');
@@ -581,27 +582,8 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     private authService: AuthService,
     private router: Router
   ) {
-    // MediaRecorder is the preferred recording method (for server-side ElevenLabs Scribe)
     if (navigator.mediaDevices && typeof MediaRecorder !== 'undefined') {
       this.speechSupported = true;
-    } else {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        this.speechSupported = true;
-        this.recognition = new SpeechRecognition();
-        this.recognition.lang = 'fr-FR';
-        this.recognition.continuous = true;
-        this.recognition.interimResults = true;
-        this.recognition.onresult = (event: any) => {
-          let transcript = '';
-          for (let i = 0; i < event.results.length; i++) {
-            transcript += event.results[i][0].transcript;
-          }
-          this.userMessage = transcript;
-        };
-        this.recognition.onerror = () => this.isRecording.set(false);
-        this.recognition.onend = () => this.isRecording.set(false);
-      }
     }
   }
 
@@ -612,7 +594,7 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.stopSpeaking();
     this.stopRecordingCleanup();
-    this.cleanupVAD();
+    this.cleanupRealtimeSTT();
   }
 
   ngAfterViewChecked(): void {
@@ -709,11 +691,8 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     this.avatarMood.set('thinking');
     this.shouldScroll = true;
 
-    if (this.autoTTS()) {
-      this.sendMessageStreaming(text);
-    } else {
-      this.sendMessageClassic(text);
-    }
+    // Always use streaming for progressive display; fallback to classic on error
+    this.sendMessageStreaming(text);
   }
 
   /** Streaming path: SSE for text + parallel TTS per sentence */
@@ -767,13 +746,15 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
               const parsed = JSON.parse(data);
 
               if (eventType === 'sentence') {
-                // Display sentence progressively + queue for TTS
+                // Display sentence progressively + optionally queue for TTS
                 const sentenceText = parsed.text;
                 if (sentenceText) {
                   fullResponse += (fullResponse ? ' ' : '') + sentenceText;
                   this.streamingResponse.set(fullResponse);
                   this.shouldScroll = true;
-                  this.enqueueTTSSentence(sentenceText);
+                  if (this.autoTTS()) {
+                    this.enqueueTTSSentence(sentenceText);
+                  }
                 }
               } else if (eventType === 'done') {
                 const finalResponse = parsed.response || fullResponse;
@@ -897,72 +878,174 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     }
   }
 
-  private startRecording(): void {
-    if (navigator.mediaDevices && typeof MediaRecorder !== 'undefined') {
-      navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
-        this.audioChunks = [];
-        this.vadStream = stream;
+  private async startRecording(): Promise<void> {
+    if (!navigator.mediaDevices) return;
 
-        this.mediaRecorder = new MediaRecorder(stream, { mimeType: this.getRecordingMimeType() });
-        this.mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            this.audioChunks.push(event.data);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.sttStream = stream;
+      this.audioChunks = [];
+      this.sttCommittedText = '';
+      this.userMessage = '';
+      this.isRecording.set(true);
+
+      // Start MediaRecorder as backup (for non-realtime fallback)
+      this.mediaRecorder = new MediaRecorder(stream, { mimeType: this.getRecordingMimeType() });
+      this.mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) this.audioChunks.push(event.data);
+      };
+      this.mediaRecorder.start(250);
+
+      // Try to start ElevenLabs realtime STT WebSocket
+      await this.startRealtimeSTT(stream);
+    } catch {
+      // Mic access denied or error
+      this.isRecording.set(false);
+    }
+  }
+
+  /**
+   * Connect to ElevenLabs Realtime STT via WebSocket.
+   * Streams 16kHz mono PCM audio chunks and receives partial/committed
+   * transcripts displayed in the input field as the user speaks.
+   */
+  private async startRealtimeSTT(stream: MediaStream): Promise<void> {
+    try {
+      // Get a single-use token from our backend
+      const { token: authToken } = this.evaluationService.getTTSStreamInfo();
+      const tokenRes = await fetch(`${this.evaluationService.getApiUrl()}/tts/stt-token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
+        },
+      });
+
+      if (!tokenRes.ok) return; // Fallback to batch transcription on stop
+
+      const { token: sttToken } = await tokenRes.json();
+      if (!sttToken) return;
+
+      // Connect WebSocket to ElevenLabs realtime STT
+      const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?token=${sttToken}&language_code=fra&model_id=scribe_v2_realtime&sample_rate=16000&encoding=pcm_s16le`;
+      this.sttWebSocket = new WebSocket(wsUrl);
+
+      this.sttWebSocket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.message_type === 'partial_transcript' && msg.text) {
+            // Show committed text + live partial
+            this.userMessage = (this.sttCommittedText + ' ' + msg.text).trim();
+          } else if (msg.message_type === 'committed_transcript' && msg.text) {
+            this.sttCommittedText = (this.sttCommittedText + ' ' + msg.text).trim();
+            this.userMessage = this.sttCommittedText;
           }
-        };
+        } catch {}
+      };
+
+      this.sttWebSocket.onerror = () => {
+        this.cleanupRealtimeSTT();
+      };
+
+      // Wait for WebSocket to open before streaming audio
+      await new Promise<void>((resolve, reject) => {
+        this.sttWebSocket!.onopen = () => resolve();
+        this.sttWebSocket!.onerror = () => reject();
+        setTimeout(() => reject(), 5000);
+      });
+
+      // Set up AudioContext to capture 16kHz mono PCM and send via WebSocket
+      this.sttAudioContext = new AudioContext({ sampleRate: 16000 });
+      const source = this.sttAudioContext.createMediaStreamSource(stream);
+      // ScriptProcessorNode with 4096 buffer, 1 input channel, 1 output channel
+      this.sttProcessor = this.sttAudioContext.createScriptProcessor(4096, 1, 1);
+
+      this.sttProcessor.onaudioprocess = (e) => {
+        if (!this.sttWebSocket || this.sttWebSocket.readyState !== WebSocket.OPEN) return;
+
+        const float32 = e.inputBuffer.getChannelData(0);
+        // Convert Float32 [-1,1] to Int16 PCM
+        const int16 = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32[i]));
+          int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+
+        // Base64 encode the PCM data
+        const bytes = new Uint8Array(int16.buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+
+        this.sttWebSocket!.send(JSON.stringify({
+          message_type: 'input_audio_chunk',
+          audio_base_64: base64,
+        }));
+      };
+
+      source.connect(this.sttProcessor);
+      this.sttProcessor.connect(this.sttAudioContext.destination);
+    } catch {
+      // WebSocket setup failed — will fall back to batch transcription
+      this.cleanupRealtimeSTT();
+    }
+  }
+
+  private cleanupRealtimeSTT(): void {
+    if (this.sttProcessor) {
+      this.sttProcessor.disconnect();
+      this.sttProcessor = null;
+    }
+    if (this.sttAudioContext) {
+      this.sttAudioContext.close().catch(() => {});
+      this.sttAudioContext = null;
+    }
+    if (this.sttWebSocket) {
+      if (this.sttWebSocket.readyState === WebSocket.OPEN) {
+        this.sttWebSocket.close();
+      }
+      this.sttWebSocket = null;
+    }
+  }
+
+  private stopRecording(): void {
+    const hadRealtimeSTT = !!this.sttWebSocket;
+    this.cleanupRealtimeSTT();
+    this.isRecording.set(false);
+
+    if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+      // If realtime STT produced text, use it immediately (skip batch transcription)
+      if (hadRealtimeSTT && this.userMessage.trim()) {
+        this.mediaRecorder.stop();
+        this.sttStream?.getTracks().forEach((t) => t.stop());
+        this.sttStream = null;
+        this.sendMessage();
+      } else {
+        // Fallback: batch transcribe via ElevenLabs Scribe
         this.mediaRecorder.onstop = () => {
-          this.cleanupVAD();
-          stream.getTracks().forEach((t) => t.stop());
+          this.sttStream?.getTracks().forEach((t) => t.stop());
+          this.sttStream = null;
           const audioBlob = new Blob(this.audioChunks, { type: this.getRecordingMimeType() });
           if (audioBlob.size > 0) {
             this.transcribeAndAutoSend(audioBlob);
           }
         };
-        this.mediaRecorder.start(250); // Collect data every 250ms for responsive stop
-        this.isRecording.set(true);
-      }).catch(() => {
-        this.fallbackBrowserSTT();
-      });
-    } else {
-      this.fallbackBrowserSTT();
-    }
-  }
-
-  /**
-   * Voice Activity Detection: monitors audio amplitude for visual feedback.
-   * Does NOT auto-stop — the user controls when to stop via the mic button.
-   * This avoids the frustrating problem of cutting off mid-sentence.
-   */
-  private setupVAD(stream: MediaStream): void {
-    // VAD is intentionally passive — no auto-stop.
-    // The user taps the mic button when done speaking.
-  }
-
-  private cleanupVAD(): void {
-    if (this.vadCheckInterval) {
-      clearInterval(this.vadCheckInterval);
-      this.vadCheckInterval = null;
-    }
-    if (this.audioContext) {
-      this.audioContext.close().catch(() => {});
-      this.audioContext = null;
-    }
-    this.analyserNode = null;
-  }
-
-  private stopRecording(): void {
-    if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
-      this.mediaRecorder.stop();
-      this.isRecording.set(false);
-    } else if (this.recognition) {
-      this.recognition.stop();
-      this.isRecording.set(false);
+        this.mediaRecorder.stop();
+      }
     }
   }
 
   private stopRecordingCleanup(): void {
-    this.cleanupVAD();
     if (this.isRecording()) {
-      this.stopRecording();
+      this.cleanupRealtimeSTT();
+      this.isRecording.set(false);
+      if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+        this.mediaRecorder.stop();
+      }
+      this.sttStream?.getTracks().forEach((t) => t.stop());
+      this.sttStream = null;
     }
   }
 
@@ -1006,12 +1089,6 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
         this.errorMessage.set('Erreur de transcription. Réessaie ou tape ton message.');
       },
     });
-  }
-
-  private fallbackBrowserSTT(): void {
-    if (!this.recognition) return;
-    this.recognition.start();
-    this.isRecording.set(true);
   }
 
   // ── TTS Sentence Queue (streaming pipeline: Mistral → sentence → ElevenLabs) ──
