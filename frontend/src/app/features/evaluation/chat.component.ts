@@ -539,6 +539,8 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   speechSupported = false;
   ttsSupported = true;
   private recognition: any = null;
+  private liveRecognition: any = null;  // Real-time SpeechRecognition running in parallel
+  private liveTranscript = '';           // Accumulated final transcript from live recognition
   private mediaRecorder: MediaRecorder | null = null;
   private audioChunks: Blob[] = [];
   private currentAudio: HTMLAudioElement | null = null;
@@ -581,13 +583,14 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     private authService: AuthService,
     private router: Router
   ) {
-    // MediaRecorder is the preferred recording method (for server-side ElevenLabs Scribe)
+    // Check for MediaRecorder (primary audio capture) or SpeechRecognition (fallback)
     if (navigator.mediaDevices && typeof MediaRecorder !== 'undefined') {
       this.speechSupported = true;
     } else {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRecognition) {
         this.speechSupported = true;
+        // Legacy fallback: browser-only STT without MediaRecorder
         this.recognition = new SpeechRecognition();
         this.recognition.lang = 'fr-FR';
         this.recognition.continuous = true;
@@ -709,11 +712,8 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     this.avatarMood.set('thinking');
     this.shouldScroll = true;
 
-    if (this.autoTTS()) {
-      this.sendMessageStreaming(text);
-    } else {
-      this.sendMessageClassic(text);
-    }
+    // Always use streaming for progressive display; fallback to classic on error
+    this.sendMessageStreaming(text);
   }
 
   /** Streaming path: SSE for text + parallel TTS per sentence */
@@ -767,13 +767,15 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
               const parsed = JSON.parse(data);
 
               if (eventType === 'sentence') {
-                // Display sentence progressively + queue for TTS
+                // Display sentence progressively + optionally queue for TTS
                 const sentenceText = parsed.text;
                 if (sentenceText) {
                   fullResponse += (fullResponse ? ' ' : '') + sentenceText;
                   this.streamingResponse.set(fullResponse);
                   this.shouldScroll = true;
-                  this.enqueueTTSSentence(sentenceText);
+                  if (this.autoTTS()) {
+                    this.enqueueTTSSentence(sentenceText);
+                  }
                 }
               } else if (eventType === 'done') {
                 const finalResponse = parsed.response || fullResponse;
@@ -902,7 +904,9 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
       navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
         this.audioChunks = [];
         this.vadStream = stream;
+        this.liveTranscript = '';
 
+        // Start MediaRecorder (backup for ElevenLabs transcription)
         this.mediaRecorder = new MediaRecorder(stream, { mimeType: this.getRecordingMimeType() });
         this.mediaRecorder.ondataavailable = (event) => {
           if (event.data.size > 0) {
@@ -912,18 +916,80 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
         this.mediaRecorder.onstop = () => {
           this.cleanupVAD();
           stream.getTracks().forEach((t) => t.stop());
-          const audioBlob = new Blob(this.audioChunks, { type: this.getRecordingMimeType() });
-          if (audioBlob.size > 0) {
-            this.transcribeAndAutoSend(audioBlob);
+
+          // If live recognition already captured text, send it immediately
+          if (this.liveTranscript.trim()) {
+            const text = this.liveTranscript.trim();
+            this.liveTranscript = '';
+            this.userMessage = text;
+            this.sendMessage();
+          } else {
+            // Fallback to ElevenLabs transcription
+            const audioBlob = new Blob(this.audioChunks, { type: this.getRecordingMimeType() });
+            if (audioBlob.size > 0) {
+              this.transcribeAndAutoSend(audioBlob);
+            }
           }
         };
-        this.mediaRecorder.start(250); // Collect data every 250ms for responsive stop
+        this.mediaRecorder.start(250);
         this.isRecording.set(true);
+
+        // Start live SpeechRecognition in parallel for real-time text preview
+        this.startLiveRecognition();
       }).catch(() => {
         this.fallbackBrowserSTT();
       });
     } else {
       this.fallbackBrowserSTT();
+    }
+  }
+
+  /**
+   * Start browser SpeechRecognition in parallel with MediaRecorder.
+   * Provides real-time text preview in the input field as the user speaks.
+   * When recording stops, we use this transcript immediately (no server round-trip).
+   */
+  private startLiveRecognition(): void {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    try {
+      this.liveRecognition = new SpeechRecognition();
+      this.liveRecognition.lang = 'fr-FR';
+      this.liveRecognition.continuous = true;
+      this.liveRecognition.interimResults = true;
+
+      this.liveRecognition.onresult = (event: any) => {
+        let finalText = '';
+        let interimText = '';
+        for (let i = 0; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            finalText += event.results[i][0].transcript;
+          } else {
+            interimText += event.results[i][0].transcript;
+          }
+        }
+        this.liveTranscript = finalText;
+        // Show real-time preview: final + interim text
+        this.userMessage = (finalText + interimText).trim();
+      };
+
+      this.liveRecognition.onerror = () => {
+        // Live recognition failed — ElevenLabs fallback will handle it
+        this.liveRecognition = null;
+      };
+
+      this.liveRecognition.onend = () => {
+        // SpeechRecognition can end spontaneously; restart if still recording
+        if (this.isRecording() && this.liveRecognition) {
+          try { this.liveRecognition.start(); } catch {}
+        }
+      };
+
+      this.liveRecognition.start();
+    } catch {
+      // Browser doesn't support SpeechRecognition — ElevenLabs fallback
+      this.liveRecognition = null;
     }
   }
 
@@ -950,6 +1016,12 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   }
 
   private stopRecording(): void {
+    // Stop live recognition first so liveTranscript is finalized
+    if (this.liveRecognition) {
+      try { this.liveRecognition.abort(); } catch {}
+      this.liveRecognition = null;
+    }
+
     if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
       this.mediaRecorder.stop();
       this.isRecording.set(false);
