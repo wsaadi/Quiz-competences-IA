@@ -184,8 +184,11 @@ Quand la phase est SCORING (dernière interaction), le JSON doit contenir les sc
 """
 
 
-async def call_mistral(messages: list[dict]) -> str:
-    """Call Mistral AI chat completion API with retry and exponential backoff."""
+async def call_mistral(messages: list[dict]) -> tuple[str, dict]:
+    """Call Mistral AI chat completion API with retry and exponential backoff.
+
+    Returns (content, usage_dict) where usage_dict has prompt_tokens and completion_tokens.
+    """
     headers = {
         "Authorization": f"Bearer {settings.MISTRAL_API_KEY}",
         "Content-Type": "application/json",
@@ -218,7 +221,8 @@ async def call_mistral(messages: list[dict]) -> str:
 
                 response.raise_for_status()
                 data = response.json()
-                return data["choices"][0]["message"]["content"]
+                usage = data.get("usage", {})
+                return data["choices"][0]["message"]["content"], usage
 
         except RETRY_EXCEPTIONS as exc:
             last_exception = exc
@@ -237,8 +241,20 @@ async def call_mistral(messages: list[dict]) -> str:
     raise last_exception or httpx.ConnectError("Mistral API unreachable after retries")
 
 
+# Mutable container to capture streaming usage from the last SSE chunk
+_last_stream_usage: dict = {}
+
+
+def get_last_stream_usage() -> dict:
+    """Return usage dict captured from the last stream_mistral call."""
+    return dict(_last_stream_usage)
+
+
 async def stream_mistral(messages: list[dict]) -> AsyncGenerator[str, None]:
     """Stream Mistral AI chat completion, yielding text chunks as they arrive."""
+    global _last_stream_usage
+    _last_stream_usage = {}
+
     headers = {
         "Authorization": f"Bearer {settings.MISTRAL_API_KEY}",
         "Content-Type": "application/json",
@@ -249,6 +265,7 @@ async def stream_mistral(messages: list[dict]) -> AsyncGenerator[str, None]:
         "temperature": 0.7,
         "max_tokens": 2000,
         "stream": True,
+        "stream_options": {"include_usage": True},
     }
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0)) as client:
@@ -257,8 +274,9 @@ async def stream_mistral(messages: list[dict]) -> AsyncGenerator[str, None]:
                 error_body = await response.aread()
                 logger.error("Mistral streaming error %s: %s", response.status_code, error_body[:300])
                 # Fallback to non-streaming
-                fallback = await call_mistral(messages)
-                yield fallback
+                fallback_content, fallback_usage = await call_mistral(messages)
+                _last_stream_usage = fallback_usage
+                yield fallback_content
                 return
 
             async for line in response.aiter_lines():
@@ -269,6 +287,9 @@ async def stream_mistral(messages: list[dict]) -> AsyncGenerator[str, None]:
                     break
                 try:
                     data = json.loads(data_str)
+                    # Capture usage from any chunk that has it (usually the last)
+                    if "usage" in data and data["usage"]:
+                        _last_stream_usage = data["usage"]
                     delta = data.get("choices", [{}])[0].get("delta", {})
                     content = delta.get("content", "")
                     if content:
@@ -400,23 +421,23 @@ def parse_eval_meta(response_text: str) -> tuple[dict | None, str]:
 async def evaluate_message(
     conversation_history: list[dict],
     user_message: str,
-) -> tuple[str, dict | None]:
+) -> tuple[str, dict | None, dict]:
     """
     Process a user message through the evaluation engine.
 
-    Returns (assistant_response_text, eval_metadata_or_none).
+    Returns (assistant_response_text, eval_metadata_or_none, usage_dict).
     """
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(conversation_history)
     messages.append({"role": "user", "content": user_message})
 
-    raw_response = await call_mistral(messages)
+    raw_response, usage = await call_mistral(messages)
     meta, clean_message = parse_eval_meta(raw_response)
 
-    return clean_message, meta
+    return clean_message, meta, usage
 
 
-async def generate_final_scoring(conversation_history: list[dict]) -> tuple[str, dict | None]:
+async def generate_final_scoring(conversation_history: list[dict]) -> tuple[str, dict | None, dict]:
     """Force the AI to produce final scores after the conversation."""
     scoring_prompt = (
         "L'évaluation est maintenant terminée. Génère le scoring final avec la phase SCORING. "

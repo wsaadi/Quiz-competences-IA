@@ -1,4 +1,4 @@
-import { Component, signal } from '@angular/core';
+import { Component, signal, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
@@ -10,6 +10,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { AuthService } from '../../core/services/auth.service';
 import { AvatarComponent } from '../../shared/components/avatar.component';
+import { BrandingService } from '../../core/services/branding.service';
 
 @Component({
   selector: 'app-login',
@@ -30,7 +31,8 @@ import { AvatarComponent } from '../../shared/components/avatar.component';
       <mat-card class="login-card">
         <div class="avatar-section">
           <app-avatar [size]="100" [mood]="avatarMood()" label="Aria"></app-avatar>
-          <h1>Quiz Compétences IA</h1>
+          <img *ngIf="branding.hasLogo()" [src]="branding.logoUrl()" alt="Logo" class="login-logo" />
+          <h1>{{ branding.appName() }}</h1>
           <p class="subtitle">Évalue tes compétences en Intelligence Artificielle</p>
         </div>
 
@@ -109,6 +111,13 @@ import { AvatarComponent } from '../../shared/components/avatar.component';
       margin-bottom: 24px;
     }
 
+    .login-logo {
+      max-height: 60px;
+      max-width: 200px;
+      margin-top: 12px;
+      border-radius: 8px;
+    }
+
     .avatar-section h1 {
       margin: 16px 0 4px;
       font-size: 24px;
@@ -148,6 +157,7 @@ import { AvatarComponent } from '../../shared/components/avatar.component';
   `],
 })
 export class LoginComponent {
+  branding = inject(BrandingService);
   username = '';
   password = '';
   hidePassword = signal(true);

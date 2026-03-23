@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.database import init_db
 from app.core.security import get_password_hash
 from app.models.user import User, UserRole
+import app.models.config  # noqa: F401 — register models for table creation
 from app.routers import auth, evaluation, admin, tts
 
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
     os.makedirs("data", exist_ok=True)
     await init_db()
     await _seed_admin()
+    await _seed_defaults()
     yield
     # Cleanup shared httpx client for TTS/STT
     from app.routers.tts import _http_client
@@ -83,6 +85,29 @@ async def health():
     return {"status": "ok", "app": settings.APP_NAME}
 
 
+@app.get("/api/branding")
+async def get_branding():
+    """Public endpoint returning branding config (app name, logo/favicon URLs)."""
+    from sqlalchemy import select
+    from app.core.database import async_session as _async_session
+    from app.models.config import AppConfig
+
+    result = {}
+    try:
+        async with _async_session() as session:
+            rows = await session.execute(select(AppConfig))
+            for row in rows.scalars().all():
+                result[row.key] = row.value
+    except Exception:
+        pass
+
+    return {
+        "app_name": result.get("app_name", settings.APP_NAME),
+        "has_logo": bool(result.get("logo_path")),
+        "has_favicon": bool(result.get("favicon_path")),
+    }
+
+
 async def _seed_admin():
     """Create default admin user if none exists."""
     from sqlalchemy import select
@@ -101,3 +126,34 @@ async def _seed_admin():
             session.add(admin_user)
             await session.commit()
             logger.info("Default admin user created (admin / Admin@2024!)")
+
+
+async def _seed_defaults():
+    """Seed default AppConfig and CostConfig entries if missing."""
+    from sqlalchemy import select
+    from app.core.database import async_session
+    from app.models.config import AppConfig, CostConfig
+
+    async with async_session() as session:
+        # Default app config
+        defaults = {
+            "app_name": settings.APP_NAME,
+            "elevenlabs_voice_id": settings.ELEVENLABS_VOICE_ID,
+        }
+        for key, val in defaults.items():
+            existing = await session.execute(select(AppConfig).where(AppConfig.key == key))
+            if not existing.scalar_one_or_none():
+                session.add(AppConfig(key=key, value=val))
+
+        # Default cost config
+        cost_defaults = [
+            ("mistral_cost_per_1m_tokens_in", 2.0, "Mistral - coût / 1M tokens IN (EUR)"),
+            ("mistral_cost_per_1m_tokens_out", 6.0, "Mistral - coût / 1M tokens OUT (EUR)"),
+            ("elevenlabs_cost_per_1k_chars", 0.30, "ElevenLabs - coût / 1000 caractères (EUR)"),
+        ]
+        for key, val, label in cost_defaults:
+            existing = await session.execute(select(CostConfig).where(CostConfig.key == key))
+            if not existing.scalar_one_or_none():
+                session.add(CostConfig(key=key, value=val, label=label))
+
+        await session.commit()

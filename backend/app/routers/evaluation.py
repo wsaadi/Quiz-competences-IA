@@ -20,8 +20,10 @@ from app.services.mistral_service import (
     stream_mistral,
     split_into_sentences,
     parse_eval_meta,
+    get_last_stream_usage,
     SYSTEM_PROMPT,
 )
+from app.services.usage_tracker import log_api_usage
 
 router = APIRouter(prefix="/evaluations", tags=["evaluations"])
 
@@ -82,7 +84,15 @@ async def start_evaluation(
         f"Le collaborateur s'appelle {user.full_name}. "
         "Commence l'évaluation en te présentant chaleureusement."
     )
-    ai_response, meta = await evaluate_message([], initial_context)
+    ai_response, meta, usage = await evaluate_message([], initial_context)
+
+    # Log Mistral usage
+    await log_api_usage(
+        service="mistral", endpoint="chat",
+        tokens_in=usage.get("prompt_tokens", 0),
+        tokens_out=usage.get("completion_tokens", 0),
+        evaluation_id=evaluation.id, user_id=user.id,
+    )
 
     # Save AI message
     ai_msg = EvaluationMessage(
@@ -148,9 +158,17 @@ async def chat(
     should_conclude = evaluation.total_messages >= MAX_MESSAGES_PER_EVAL - 4
 
     if should_conclude:
-        ai_response, meta = await generate_final_scoring(conversation)
+        ai_response, meta, usage = await generate_final_scoring(conversation)
     else:
-        ai_response, meta = await evaluate_message(conversation[:-1], clean_message)
+        ai_response, meta, usage = await evaluate_message(conversation[:-1], clean_message)
+
+    # Log Mistral usage
+    await log_api_usage(
+        service="mistral", endpoint="chat",
+        tokens_in=usage.get("prompt_tokens", 0),
+        tokens_out=usage.get("completion_tokens", 0),
+        evaluation_id=evaluation.id, user_id=user.id,
+    )
 
     # Save AI message
     phase = meta.get("phase", "EXPLORATION") if meta else "EXPLORATION"
@@ -327,6 +345,15 @@ async def chat_stream(
         phase = meta.get("phase", "EXPLORATION") if meta else "EXPLORATION"
         is_complete = bool(meta and meta.get("phase") == "SCORING")
 
+        # Log Mistral streaming usage
+        stream_usage = get_last_stream_usage()
+        await log_api_usage(
+            service="mistral", endpoint="chat-stream",
+            tokens_in=stream_usage.get("prompt_tokens", 0),
+            tokens_out=stream_usage.get("completion_tokens", 0),
+            evaluation_id=eval_id, user_id=user.id,
+        )
+
         # Save to DB in a new session (the original session is closed)
         async with async_session() as save_db:
             ai_msg = EvaluationMessage(
@@ -421,7 +448,15 @@ async def force_complete(
     all_messages = msg_result.scalars().all()
     conversation = _build_conversation(all_messages)
 
-    ai_response, meta = await generate_final_scoring(conversation)
+    ai_response, meta, usage = await generate_final_scoring(conversation)
+
+    # Log Mistral usage
+    await log_api_usage(
+        service="mistral", endpoint="chat",
+        tokens_in=usage.get("prompt_tokens", 0),
+        tokens_out=usage.get("completion_tokens", 0),
+        evaluation_id=evaluation.id, user_id=user.id,
+    )
 
     if meta and meta.get("scores"):
         scores = meta["scores"]
