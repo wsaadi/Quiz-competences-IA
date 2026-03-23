@@ -543,10 +543,10 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   private vadCheckInterval: any = null;
   private silenceStartTime = 0;
   private speechDetected = false;               // Has the user actually spoken?
-  private readonly SILENCE_THRESHOLD = 8;        // RMS amplitude threshold (very low — only true silence)
-  private readonly SILENCE_DURATION_MS = 2500;   // 2.5s of sustained silence → stop recording
-  private readonly MIN_RECORDING_MS = 2000;      // Minimum 2s of recording before auto-stop
-  private readonly MIN_SPEECH_MS = 500;          // Must detect speech for at least 0.5s before enabling auto-stop
+  private readonly SILENCE_THRESHOLD = 5;        // RMS amplitude threshold (very conservative)
+  private readonly SILENCE_DURATION_MS = 3500;   // 3.5s of sustained silence → stop recording
+  private readonly MIN_RECORDING_MS = 3000;      // Minimum 3s of recording before auto-stop
+  private readonly MIN_SPEECH_MS = 1000;         // Must detect speech for at least 1s before enabling auto-stop
   private speechStartTime = 0;
   private recordingStartTime = 0;
 
