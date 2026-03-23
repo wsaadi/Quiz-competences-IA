@@ -544,19 +544,11 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   private currentAudio: HTMLAudioElement | null = null;
   private ttsAbortController: AbortController | null = null;
 
-  // Voice Activity Detection (VAD)
+  // Voice Activity Detection (VAD) — passive only, no auto-stop
   private audioContext: AudioContext | null = null;
   private analyserNode: AnalyserNode | null = null;
   private vadStream: MediaStream | null = null;
   private vadCheckInterval: any = null;
-  private silenceStartTime = 0;
-  private speechDetected = false;               // Has the user actually spoken?
-  private readonly SILENCE_THRESHOLD = 5;        // RMS amplitude threshold (very conservative)
-  private readonly SILENCE_DURATION_MS = 3500;   // 3.5s of sustained silence → stop recording
-  private readonly MIN_RECORDING_MS = 3000;      // Minimum 3s of recording before auto-stop
-  private readonly MIN_SPEECH_MS = 1000;         // Must detect speech for at least 1s before enabling auto-stop
-  private speechStartTime = 0;
-  private recordingStartTime = 0;
 
   // Streaming response displayed progressively in the UI
   streamingResponse = signal('');
@@ -891,7 +883,7 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
       .replace(/\n/g, '<br>');
   }
 
-  // ── Speech-to-Text with Voice Activity Detection (auto-stop on silence) ──
+  // ── Speech-to-Text (manual stop via mic button) ──
 
   toggleRecording(): void {
     if (this.isRecording()) {
@@ -906,10 +898,6 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
       navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
         this.audioChunks = [];
         this.vadStream = stream;
-        this.recordingStartTime = Date.now();
-
-        // Set up Voice Activity Detection (VAD) using Web Audio API
-        this.setupVAD(stream);
 
         this.mediaRecorder = new MediaRecorder(stream, { mimeType: this.getRecordingMimeType() });
         this.mediaRecorder.ondataavailable = (event) => {
@@ -936,79 +924,13 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   }
 
   /**
-   * Voice Activity Detection: monitors audio amplitude and automatically
-   * stops recording only after the user has clearly spoken AND then gone
-   * silent for SILENCE_DURATION_MS. Very conservative to avoid cutting
-   * mid-sentence — natural speech pauses (1-2s) are expected in French.
+   * Voice Activity Detection: monitors audio amplitude for visual feedback.
+   * Does NOT auto-stop — the user controls when to stop via the mic button.
+   * This avoids the frustrating problem of cutting off mid-sentence.
    */
   private setupVAD(stream: MediaStream): void {
-    try {
-      this.audioContext = new AudioContext();
-      const source = this.audioContext.createMediaStreamSource(stream);
-      this.analyserNode = this.audioContext.createAnalyser();
-      this.analyserNode.fftSize = 1024;
-      this.analyserNode.smoothingTimeConstant = 0.5; // More smoothing to ignore micro-fluctuations
-      source.connect(this.analyserNode);
-
-      const dataArray = new Uint8Array(this.analyserNode.fftSize);
-      this.silenceStartTime = 0;
-      this.speechDetected = false;
-      this.speechStartTime = 0;
-
-      this.vadCheckInterval = setInterval(() => {
-        if (!this.analyserNode || !this.isRecording()) {
-          this.cleanupVAD();
-          return;
-        }
-
-        this.analyserNode.getByteTimeDomainData(dataArray);
-
-        // Calculate RMS amplitude
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-          const val = dataArray[i] - 128;
-          sum += val * val;
-        }
-        const rms = Math.sqrt(sum / dataArray.length);
-
-        const now = Date.now();
-        const recordingDuration = now - this.recordingStartTime;
-
-        if (rms >= this.SILENCE_THRESHOLD) {
-          // Sound detected — track that user has started speaking
-          this.silenceStartTime = 0;
-          if (!this.speechDetected) {
-            this.speechDetected = true;
-            this.speechStartTime = now;
-          }
-        } else {
-          // Silence detected
-          if (this.silenceStartTime === 0) {
-            this.silenceStartTime = now;
-          }
-
-          // Only consider auto-stop if ALL conditions are met:
-          // 1. User has actually spoken (speechDetected)
-          // 2. User spoke for at least MIN_SPEECH_MS
-          // 3. Total recording is at least MIN_RECORDING_MS
-          // 4. Silence has lasted at least SILENCE_DURATION_MS
-          if (this.speechDetected) {
-            const speechDuration = this.silenceStartTime - this.speechStartTime;
-            const silenceDuration = now - this.silenceStartTime;
-
-            if (
-              speechDuration >= this.MIN_SPEECH_MS &&
-              recordingDuration >= this.MIN_RECORDING_MS &&
-              silenceDuration >= this.SILENCE_DURATION_MS
-            ) {
-              this.stopRecording();
-            }
-          }
-        }
-      }, 150); // Check every 150ms — less aggressive polling
-    } catch {
-      // VAD setup failed — recording still works, just no auto-stop
-    }
+    // VAD is intentionally passive — no auto-stop.
+    // The user taps the mic button when done speaking.
   }
 
   private cleanupVAD(): void {
