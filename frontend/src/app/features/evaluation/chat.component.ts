@@ -625,6 +625,16 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
                   }))
                 );
                 this.shouldScroll = true;
+
+                // Restore progress estimate from message count (~60 messages = 100%)
+                const estimatedProgress = Math.min(95, Math.round((msgs.length / 60) * 100));
+                this.progress.set(estimatedProgress);
+
+                // Restore phase from last message if available
+                const lastMsg = [...msgs].reverse().find((m) => m.phase);
+                if (lastMsg?.phase) {
+                  this.currentPhase.set(lastMsg.phase);
+                }
               }
             },
             error: () => this.resuming.set(false),
