@@ -1042,7 +1042,12 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
       this.sttAudioContext = null;
     }
     if (this.sttWebSocket) {
-      if (this.sttWebSocket.readyState === WebSocket.OPEN) {
+      // Remove handlers before closing to avoid spurious error/close logs
+      this.sttWebSocket.onmessage = null;
+      this.sttWebSocket.onerror = null;
+      this.sttWebSocket.onclose = null;
+      if (this.sttWebSocket.readyState === WebSocket.OPEN ||
+          this.sttWebSocket.readyState === WebSocket.CONNECTING) {
         this.sttWebSocket.close();
       }
       this.sttWebSocket = null;
