@@ -54,6 +54,10 @@ interface ChatMsg {
     <div class="chat-layout">
       <!-- Sidebar -->
       <aside class="chat-sidebar">
+        <button mat-icon-button class="back-btn" (click)="goBack()" matTooltip="Retour au tableau de bord">
+          <mat-icon>arrow_back</mat-icon>
+        </button>
+
         <div class="sidebar-header">
           <app-avatar [size]="70" [mood]="avatarMood()" label="Aria"></app-avatar>
           <h3>{{ userName() }}</h3>
@@ -257,6 +261,13 @@ interface ChatMsg {
       height: 100vh;
       background: #f5f5f5;
     }
+
+    .back-btn {
+      align-self: flex-start;
+      margin: -8px 0 -16px -8px;
+      color: #666;
+    }
+    .back-btn:hover { color: #1a73e8; }
 
     .chat-sidebar {
       width: 280px;
@@ -867,10 +878,14 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     });
   }
 
-  pauseEvaluation(): void {
+  goBack(): void {
     this.stopSpeaking();
     this.stopRecordingCleanup();
     this.router.navigate(['/dashboard']);
+  }
+
+  pauseEvaluation(): void {
+    this.goBack();
   }
 
   goToDashboard(): void {
