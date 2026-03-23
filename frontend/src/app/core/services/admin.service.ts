@@ -53,6 +53,44 @@ export interface CollaborateurFiche {
   }>;
 }
 
+export interface AppConfigMap {
+  [key: string]: string;
+}
+
+export interface CostConfigItem {
+  key: string;
+  value: number;
+  label: string;
+}
+
+export interface UsageStats {
+  totals: {
+    mistral_tokens_in: number;
+    mistral_tokens_out: number;
+    elevenlabs_chars: number;
+    mistral_calls: number;
+    elevenlabs_calls: number;
+  };
+  per_evaluation: Array<{
+    evaluation_id: number;
+    user_id: number | null;
+    user_name: string;
+    mistral_tokens_in: number;
+    mistral_tokens_out: number;
+    elevenlabs_chars: number;
+    calls: number;
+    first_call: string;
+    last_call: string;
+    eval_status: string | null;
+  }>;
+}
+
+export interface BrandingInfo {
+  app_name: string;
+  has_logo: boolean;
+  has_favicon: boolean;
+}
+
 @Injectable({ providedIn: 'root' })
 export class AdminService {
   constructor(private http: HttpClient) {}
@@ -102,5 +140,42 @@ export class AdminService {
     return this.http.get<CollaborateurFiche>(
       `${environment.apiUrl}/admin/export/collaborateur/${userId}`
     );
+  }
+
+  // ── App Config ──
+  getConfig(): Observable<AppConfigMap> {
+    return this.http.get<AppConfigMap>(`${environment.apiUrl}/admin/config`);
+  }
+
+  updateConfig(key: string, value: string): Observable<any> {
+    return this.http.put(`${environment.apiUrl}/admin/config/${key}`, { value });
+  }
+
+  uploadAsset(type: 'logo' | 'favicon', file: File): Observable<any> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.http.post(`${environment.apiUrl}/admin/config/upload/${type}`, formData);
+  }
+
+  // ── Cost Config ──
+  getCostConfig(): Observable<CostConfigItem[]> {
+    return this.http.get<CostConfigItem[]>(`${environment.apiUrl}/admin/cost-config`);
+  }
+
+  updateCostConfig(key: string, value: number): Observable<any> {
+    return this.http.put(`${environment.apiUrl}/admin/cost-config/${key}`, { value });
+  }
+
+  // ── Usage Stats ──
+  getUsageStats(start?: string, end?: string): Observable<UsageStats> {
+    let params = '';
+    if (start) params += `?start=${start}`;
+    if (end) params += `${params ? '&' : '?'}end=${end}`;
+    return this.http.get<UsageStats>(`${environment.apiUrl}/admin/usage${params}`);
+  }
+
+  // ── Branding (public) ──
+  getBranding(): Observable<BrandingInfo> {
+    return this.http.get<BrandingInfo>(`${environment.apiUrl}/branding`);
   }
 }

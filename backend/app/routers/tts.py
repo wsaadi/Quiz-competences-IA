@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.models.user import User
 from app.routers.deps import get_current_user
+from app.services.usage_tracker import log_api_usage
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,28 @@ async def text_to_speech_stream(
     if len(clean_text) > 5000:
         clean_text = clean_text[:5000]
 
+    # Use voice_id from DB config if set, otherwise fall back to env
+    from sqlalchemy import select as sa_select
+    from app.core.database import async_session as _async_session
+    from app.models.config import AppConfig
     voice_id = settings.ELEVENLABS_VOICE_ID
+    try:
+        async with _async_session() as _s:
+            r = await _s.execute(sa_select(AppConfig).where(AppConfig.key == "elevenlabs_voice_id"))
+            cfg = r.scalar_one_or_none()
+            if cfg and cfg.value:
+                voice_id = cfg.value
+    except Exception:
+        pass
+
+    char_count = len(clean_text)
+    user_id = _user.id
+
+    # Log ElevenLabs TTS usage
+    await log_api_usage(
+        service="elevenlabs", endpoint="tts",
+        characters=char_count, user_id=user_id,
+    )
 
     async def audio_stream():
         client = await _get_client()

@@ -24,11 +24,18 @@ import {
   UserOut,
   GlobalStats,
   CollaborateurFiche,
+  AppConfigMap,
+  CostConfigItem,
+  UsageStats,
 } from '../../core/services/admin.service';
 import { EvaluationDetail } from '../../core/services/evaluation.service';
 import { AuthService } from '../../core/services/auth.service';
 import { AvatarComponent } from '../../shared/components/avatar.component';
 import { ScoreRadarComponent } from '../../shared/components/score-radar.component';
+import { MatDatepickerModule } from '@angular/material/datepicker';
+import { MatNativeDateModule } from '@angular/material/core';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { environment } from '../../../environments/environment';
 
 @Component({
   selector: 'app-admin',
@@ -56,6 +63,9 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
     MatMenuModule,
     AvatarComponent,
     ScoreRadarComponent,
+    MatDatepickerModule,
+    MatNativeDateModule,
+    MatSlideToggleModule,
   ],
   template: `
     <div class="admin-layout">
@@ -482,6 +492,205 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
               </div>
             </ng-template>
           </mat-tab>
+          <!-- ═══════════════ CONFIGURATION ═══════════════ -->
+          <mat-tab>
+            <ng-template mat-tab-label>
+              <mat-icon>settings</mat-icon>&nbsp;Configuration
+            </ng-template>
+            <ng-template matTabContent>
+              <div class="tab-content">
+                <!-- Branding -->
+                <mat-card class="config-card">
+                  <mat-card-header>
+                    <mat-card-title><mat-icon>palette</mat-icon> Apparence & Marque</mat-card-title>
+                  </mat-card-header>
+                  <mat-card-content>
+                    <div class="config-form">
+                      <mat-form-field appearance="outline" class="config-field-wide">
+                        <mat-label>Nom du logiciel / Titre</mat-label>
+                        <input matInput [(ngModel)]="configAppName" placeholder="Quiz Compétences IA" />
+                      </mat-form-field>
+                      <button mat-raised-button color="primary" (click)="saveAppName()">
+                        <mat-icon>save</mat-icon> Enregistrer
+                      </button>
+                    </div>
+
+                    <div class="upload-row">
+                      <div class="upload-block">
+                        <h4>Logo</h4>
+                        <div class="upload-preview" *ngIf="configHasLogo">
+                          <img [src]="logoUrl" alt="Logo" class="preview-img" />
+                        </div>
+                        <button mat-stroked-button (click)="logoInput.click()">
+                          <mat-icon>upload</mat-icon> {{ configHasLogo ? 'Changer' : 'Uploader' }} le logo
+                        </button>
+                        <input #logoInput type="file" accept="image/*" hidden (change)="uploadFile('logo', $event)" />
+                      </div>
+                      <div class="upload-block">
+                        <h4>Favicon</h4>
+                        <div class="upload-preview" *ngIf="configHasFavicon">
+                          <img [src]="faviconUrl" alt="Favicon" class="preview-img preview-favicon" />
+                        </div>
+                        <button mat-stroked-button (click)="faviconInput.click()">
+                          <mat-icon>upload</mat-icon> {{ configHasFavicon ? 'Changer' : 'Uploader' }} le favicon
+                        </button>
+                        <input #faviconInput type="file" accept="image/*" hidden (change)="uploadFile('favicon', $event)" />
+                      </div>
+                    </div>
+                  </mat-card-content>
+                </mat-card>
+
+                <!-- Voice Config -->
+                <mat-card class="config-card">
+                  <mat-card-header>
+                    <mat-card-title><mat-icon>record_voice_over</mat-icon> Voix ElevenLabs</mat-card-title>
+                  </mat-card-header>
+                  <mat-card-content>
+                    <div class="config-form">
+                      <mat-form-field appearance="outline" class="config-field-wide">
+                        <mat-label>Voice ID ElevenLabs</mat-label>
+                        <input matInput [(ngModel)]="configVoiceId" placeholder="21m00Tcm4TlvDq8ikWAM" />
+                        <mat-hint>Trouvez votre Voice ID dans le dashboard ElevenLabs</mat-hint>
+                      </mat-form-field>
+                      <button mat-raised-button color="primary" (click)="saveVoiceId()">
+                        <mat-icon>save</mat-icon> Enregistrer
+                      </button>
+                    </div>
+                  </mat-card-content>
+                </mat-card>
+              </div>
+            </ng-template>
+          </mat-tab>
+
+          <!-- ═══════════════ COUTS API ═══════════════ -->
+          <mat-tab>
+            <ng-template mat-tab-label>
+              <mat-icon>payments</mat-icon>&nbsp;Coûts API
+            </ng-template>
+            <ng-template matTabContent>
+              <div class="tab-content">
+                <!-- Cost config -->
+                <mat-card class="config-card">
+                  <mat-card-header>
+                    <mat-card-title><mat-icon>tune</mat-icon> Tarification</mat-card-title>
+                  </mat-card-header>
+                  <mat-card-content>
+                    <div class="cost-config-grid">
+                      <div *ngFor="let c of costConfig()" class="cost-config-row">
+                        <span class="cost-label">{{ c.label }}</span>
+                        <mat-form-field appearance="outline" class="cost-field">
+                          <input matInput type="number" step="0.001" [ngModel]="c.value"
+                                 (ngModelChange)="onCostChange(c.key, $event)" />
+                          <span matSuffix>&euro;</span>
+                        </mat-form-field>
+                      </div>
+                    </div>
+                  </mat-card-content>
+                </mat-card>
+
+                <!-- Date range filter -->
+                <mat-card class="config-card">
+                  <mat-card-header>
+                    <mat-card-title><mat-icon>date_range</mat-icon> Période</mat-card-title>
+                  </mat-card-header>
+                  <mat-card-content>
+                    <div class="date-row">
+                      <mat-form-field appearance="outline">
+                        <mat-label>Début</mat-label>
+                        <input matInput [matDatepicker]="startPicker" [(ngModel)]="usageStartDate"
+                               (dateChange)="loadUsage()" />
+                        <mat-datepicker-toggle matSuffix [for]="startPicker"></mat-datepicker-toggle>
+                        <mat-datepicker #startPicker></mat-datepicker>
+                      </mat-form-field>
+                      <mat-form-field appearance="outline">
+                        <mat-label>Fin</mat-label>
+                        <input matInput [matDatepicker]="endPicker" [(ngModel)]="usageEndDate"
+                               (dateChange)="loadUsage()" />
+                        <mat-datepicker-toggle matSuffix [for]="endPicker"></mat-datepicker-toggle>
+                        <mat-datepicker #endPicker></mat-datepicker>
+                      </mat-form-field>
+                      <button mat-stroked-button (click)="resetDateRange()">
+                        <mat-icon>clear_all</mat-icon> Tout afficher
+                      </button>
+                    </div>
+                  </mat-card-content>
+                </mat-card>
+
+                <!-- Global totals -->
+                <div class="cost-totals" *ngIf="usageStats() as u">
+                  <mat-card class="stat-card accent-purple">
+                    <div class="stat-value">{{ u.totals.mistral_tokens_in | number }}</div>
+                    <div class="stat-label">Tokens IN (Mistral)</div>
+                    <div class="stat-cost">{{ computeMistralCostIn(u.totals.mistral_tokens_in) | number:'1.2-4' }} &euro;</div>
+                  </mat-card>
+                  <mat-card class="stat-card accent-blue">
+                    <div class="stat-value">{{ u.totals.mistral_tokens_out | number }}</div>
+                    <div class="stat-label">Tokens OUT (Mistral)</div>
+                    <div class="stat-cost">{{ computeMistralCostOut(u.totals.mistral_tokens_out) | number:'1.2-4' }} &euro;</div>
+                  </mat-card>
+                  <mat-card class="stat-card accent-green">
+                    <div class="stat-value">{{ u.totals.elevenlabs_chars | number }}</div>
+                    <div class="stat-label">Caractères (ElevenLabs)</div>
+                    <div class="stat-cost">{{ computeElevenlabsCost(u.totals.elevenlabs_chars) | number:'1.2-4' }} &euro;</div>
+                  </mat-card>
+                  <mat-card class="stat-card accent-orange">
+                    <div class="stat-value">{{ computeTotalCost(u.totals) | number:'1.2-2' }} &euro;</div>
+                    <div class="stat-label">Coût total estimé</div>
+                    <div class="stat-cost">{{ u.totals.mistral_calls + u.totals.elevenlabs_calls }} appels API</div>
+                  </mat-card>
+                </div>
+
+                <!-- Per-evaluation table -->
+                <mat-card class="config-card" *ngIf="usageStats() as u">
+                  <mat-card-header>
+                    <mat-card-title><mat-icon>table_chart</mat-icon> Détail par session</mat-card-title>
+                  </mat-card-header>
+                  <mat-card-content>
+                    <div class="usage-table-wrapper">
+                      <table class="usage-table">
+                        <thead>
+                          <tr>
+                            <th>Eval #</th>
+                            <th>Utilisateur</th>
+                            <th>Statut</th>
+                            <th>Tokens IN</th>
+                            <th>Tokens OUT</th>
+                            <th>Caractères TTS</th>
+                            <th>Coût Mistral</th>
+                            <th>Coût ElevenLabs</th>
+                            <th>Coût Total</th>
+                            <th>Dernière activité</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr *ngFor="let row of u.per_evaluation">
+                            <td>{{ row.evaluation_id || '-' }}</td>
+                            <td>{{ row.user_name }}</td>
+                            <td>
+                              <mat-chip *ngIf="row.eval_status" [class]="'mini-chip status-' + row.eval_status">
+                                {{ row.eval_status }}
+                              </mat-chip>
+                            </td>
+                            <td class="num">{{ row.mistral_tokens_in | number }}</td>
+                            <td class="num">{{ row.mistral_tokens_out | number }}</td>
+                            <td class="num">{{ row.elevenlabs_chars | number }}</td>
+                            <td class="num cost">{{ computeMistralCostIn(row.mistral_tokens_in) + computeMistralCostOut(row.mistral_tokens_out) | number:'1.2-4' }} &euro;</td>
+                            <td class="num cost">{{ computeElevenlabsCost(row.elevenlabs_chars) | number:'1.2-4' }} &euro;</td>
+                            <td class="num cost total-cost">{{ computeRowTotal(row) | number:'1.2-4' }} &euro;</td>
+                            <td>{{ row.last_call | date:'dd/MM/yyyy HH:mm' }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="empty-state-inline" *ngIf="u.per_evaluation.length === 0">
+                      <mat-icon>analytics</mat-icon>
+                      <span>Aucune donnée d'utilisation pour cette période.</span>
+                    </div>
+                  </mat-card-content>
+                </mat-card>
+              </div>
+            </ng-template>
+          </mat-tab>
         </mat-tab-group>
       </div>
     </div>
@@ -764,8 +973,47 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
       button { height: 56px; margin-top: 4px; }
     }
 
+    /* ── Config tab ── */
+    .config-card { border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .config-form {
+      display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap;
+      button { height: 56px; margin-top: 4px; }
+    }
+    .config-field-wide { flex: 1; min-width: 280px; }
+    .upload-row { display: flex; gap: 32px; margin-top: 16px; flex-wrap: wrap; }
+    .upload-block {
+      h4 { margin: 0 0 8px; color: #555; }
+    }
+    .upload-preview { margin-bottom: 8px; }
+    .preview-img { max-height: 80px; max-width: 200px; border-radius: 8px; border: 1px solid #eee; }
+    .preview-favicon { max-height: 48px; max-width: 48px; }
+
+    /* ── Cost tab ── */
+    .cost-config-grid { display: flex; flex-direction: column; gap: 8px; }
+    .cost-config-row {
+      display: flex; align-items: center; gap: 12px;
+      .cost-label { flex: 1; min-width: 200px; font-size: 14px; color: #555; }
+    }
+    .cost-field { width: 160px; }
+    .date-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+    .cost-totals {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;
+    }
+    .stat-cost { font-size: 13px; color: #666; margin-top: 4px; }
+
+    .usage-table-wrapper { overflow-x: auto; }
+    .usage-table {
+      width: 100%; border-collapse: collapse; font-size: 13px;
+      th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; }
+      th { background: #f8f9fa; font-weight: 600; color: #555; position: sticky; top: 0; }
+      .num { text-align: right; font-family: monospace; }
+      .cost { color: #6C63FF; }
+      .total-cost { font-weight: 600; color: #333; }
+    }
+    .mini-chip { font-size: 10px !important; height: 20px !important; min-height: 20px !important; }
+
     @media (max-width: 768px) {
-      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+      .stats-grid, .cost-totals { grid-template-columns: repeat(2, 1fr); }
       .charts-row { grid-template-columns: 1fr; }
       .detail-grid { grid-template-columns: 1fr; }
       .collab-grid { grid-template-columns: 1fr; }
@@ -786,6 +1034,20 @@ export class AdminComponent implements OnInit {
   stats = signal<GlobalStats | null>(null);
   selectedFiche = signal<CollaborateurFiche | null>(null);
   creatingUser = signal(false);
+
+  // Config
+  configAppName = '';
+  configVoiceId = '';
+  configHasLogo = false;
+  configHasFavicon = false;
+  logoUrl = '';
+  faviconUrl = '';
+
+  // Cost
+  costConfig = signal<CostConfigItem[]>([]);
+  usageStats = signal<UsageStats | null>(null);
+  usageStartDate: Date | null = null;
+  usageEndDate: Date | null = null;
 
   // Filters
   evalSearchQuery = '';
@@ -876,12 +1138,119 @@ export class AdminComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadData();
+    this.loadConfig();
+    this.loadCostConfig();
+    this.loadUsage();
   }
 
   loadData(): void {
     this.adminService.getUsers().subscribe((u) => this.users.set(u));
     this.adminService.getAllEvaluations().subscribe((e) => this.evaluations.set(e));
     this.adminService.getStats().subscribe((s) => this.stats.set(s));
+  }
+
+  loadConfig(): void {
+    this.adminService.getConfig().subscribe((cfg) => {
+      this.configAppName = cfg['app_name'] || '';
+      this.configVoiceId = cfg['elevenlabs_voice_id'] || '';
+      this.configHasLogo = !!cfg['logo_path'];
+      this.configHasFavicon = !!cfg['favicon_path'];
+      const base = environment.apiUrl;
+      this.logoUrl = `${base}/admin/config/asset/logo?t=${Date.now()}`;
+      this.faviconUrl = `${base}/admin/config/asset/favicon?t=${Date.now()}`;
+    });
+  }
+
+  loadCostConfig(): void {
+    this.adminService.getCostConfig().subscribe((c) => this.costConfig.set(c));
+  }
+
+  loadUsage(): void {
+    const fmt = (d: Date | null) => d ? d.toISOString().slice(0, 10) : undefined;
+    this.adminService.getUsageStats(fmt(this.usageStartDate), fmt(this.usageEndDate))
+      .subscribe((u) => this.usageStats.set(u));
+  }
+
+  saveAppName(): void {
+    this.adminService.updateConfig('app_name', this.configAppName).subscribe(() => {
+      this.snackBar.open('Nom enregistré', 'OK', { duration: 3000 });
+      // Update page title dynamically
+      document.title = this.configAppName;
+    });
+  }
+
+  saveVoiceId(): void {
+    this.adminService.updateConfig('elevenlabs_voice_id', this.configVoiceId).subscribe(() => {
+      this.snackBar.open('Voice ID enregistré', 'OK', { duration: 3000 });
+    });
+  }
+
+  uploadFile(type: 'logo' | 'favicon', event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (!input.files?.length) return;
+    const file = input.files[0];
+    this.adminService.uploadAsset(type, file).subscribe({
+      next: () => {
+        this.snackBar.open(`${type === 'logo' ? 'Logo' : 'Favicon'} mis à jour`, 'OK', { duration: 3000 });
+        this.loadConfig();
+        if (type === 'favicon') {
+          this.updateFavicon();
+        }
+      },
+      error: (err) => {
+        this.snackBar.open(err.error?.detail || 'Erreur upload', 'OK', { duration: 4000 });
+      },
+    });
+  }
+
+  updateFavicon(): void {
+    const link = document.querySelector('link[rel="icon"]') as HTMLLinkElement;
+    if (link) {
+      link.href = `${environment.apiUrl}/admin/config/asset/favicon?t=${Date.now()}`;
+    }
+  }
+
+  onCostChange(key: string, value: number): void {
+    this.adminService.updateCostConfig(key, value).subscribe(() => {
+      // Update local state for immediate recalculation
+      this.costConfig.update((configs) =>
+        configs.map((c) => c.key === key ? { ...c, value } : c)
+      );
+    });
+  }
+
+  resetDateRange(): void {
+    this.usageStartDate = null;
+    this.usageEndDate = null;
+    this.loadUsage();
+  }
+
+  getCostValue(key: string): number {
+    return this.costConfig().find((c) => c.key === key)?.value || 0;
+  }
+
+  computeMistralCostIn(tokens: number): number {
+    return (tokens / 1_000_000) * this.getCostValue('mistral_cost_per_1m_tokens_in');
+  }
+
+  computeMistralCostOut(tokens: number): number {
+    return (tokens / 1_000_000) * this.getCostValue('mistral_cost_per_1m_tokens_out');
+  }
+
+  computeElevenlabsCost(chars: number): number {
+    return (chars / 1000) * this.getCostValue('elevenlabs_cost_per_1k_chars');
+  }
+
+  computeTotalCost(totals: UsageStats['totals']): number {
+    return this.computeMistralCostIn(totals.mistral_tokens_in)
+      + this.computeMistralCostOut(totals.mistral_tokens_out)
+      + this.computeElevenlabsCost(totals.elevenlabs_chars);
+  }
+
+  computeRowTotal(row: any): number {
+    return this.computeMistralCostIn(row.mistral_tokens_in)
+      + this.computeMistralCostOut(row.mistral_tokens_out)
+      + this.computeElevenlabsCost(row.elevenlabs_chars);
   }
 
   createUser(): void {

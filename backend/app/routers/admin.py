@@ -1,12 +1,16 @@
-"""Admin router — user management, evaluation review, global statistics, exports."""
+"""Admin router — user management, evaluation review, global statistics, exports, config."""
 
+import base64
 import csv
 import io
 import logging
+import os
 from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi.responses import StreamingResponse, Response
+from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +19,7 @@ logger = logging.getLogger(__name__)
 from app.core.database import get_db
 from app.core.security import get_password_hash, validate_password_strength
 from app.models.evaluation import Evaluation, EvaluationMessage, EvaluationStatus
+from app.models.config import AppConfig, ApiUsageLog, CostConfig
 from app.models.schemas import (
     EvaluationDetail, EvaluationOut, EvaluationScores, GlobalStats,
     MessageOut, UserCreate, UserOut,
@@ -409,3 +414,230 @@ async def export_collaborateur_fiche(
         })
 
     return fiche
+
+
+# ── App Configuration ─────────────────────────────────────────────────
+
+UPLOAD_DIR = os.path.join("data", "uploads")
+
+
+class ConfigUpdate(BaseModel):
+    value: str
+
+
+@router.get("/config")
+async def get_all_config(
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Get all app configuration key-value pairs."""
+    result = await db.execute(select(AppConfig))
+    configs = result.scalars().all()
+    return {c.key: c.value for c in configs}
+
+
+@router.put("/config/{key}")
+async def update_config(
+    key: str,
+    body: ConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Update or create a config entry."""
+    result = await db.execute(select(AppConfig).where(AppConfig.key == key))
+    existing = result.scalar_one_or_none()
+    if existing:
+        existing.value = body.value
+        existing.updated_at = datetime.now(timezone.utc)
+    else:
+        db.add(AppConfig(key=key, value=body.value))
+    await db.flush()
+    return {"key": key, "value": body.value}
+
+
+@router.post("/config/upload/{asset_type}")
+async def upload_asset(
+    asset_type: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Upload logo or favicon image. asset_type must be 'logo' or 'favicon'."""
+    if asset_type not in ("logo", "favicon"):
+        raise HTTPException(status_code=400, detail="Type must be 'logo' or 'favicon'")
+
+    content_type = (file.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Le fichier doit être une image")
+
+    data = await file.read()
+    if len(data) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image trop volumineuse (max 2 Mo)")
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    ext = file.filename.rsplit(".", 1)[-1] if file.filename and "." in file.filename else "png"
+    filename = f"{asset_type}.{ext}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
+
+    with open(filepath, "wb") as f:
+        f.write(data)
+
+    # Store the path in config
+    config_key = f"{asset_type}_path"
+    result = await db.execute(select(AppConfig).where(AppConfig.key == config_key))
+    existing = result.scalar_one_or_none()
+    if existing:
+        existing.value = filepath
+        existing.updated_at = datetime.now(timezone.utc)
+    else:
+        db.add(AppConfig(key=config_key, value=filepath))
+    await db.flush()
+
+    return {"path": filepath, "filename": filename}
+
+
+@router.get("/config/asset/{asset_type}")
+async def get_asset(
+    asset_type: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve uploaded logo or favicon (public, no auth needed for display)."""
+    if asset_type not in ("logo", "favicon"):
+        raise HTTPException(status_code=400, detail="Type must be 'logo' or 'favicon'")
+
+    config_key = f"{asset_type}_path"
+    result = await db.execute(select(AppConfig).where(AppConfig.key == config_key))
+    cfg = result.scalar_one_or_none()
+
+    if not cfg or not os.path.exists(cfg.value):
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    with open(cfg.value, "rb") as f:
+        data = f.read()
+
+    ext = cfg.value.rsplit(".", 1)[-1].lower()
+    media_types = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                   "ico": "image/x-icon", "svg": "image/svg+xml", "webp": "image/webp"}
+    media_type = media_types.get(ext, "application/octet-stream")
+
+    return Response(content=data, media_type=media_type, headers={
+        "Cache-Control": "public, max-age=3600",
+    })
+
+
+# ── Cost Configuration ────────────────────────────────────────────────
+
+class CostConfigUpdate(BaseModel):
+    value: float
+
+
+@router.get("/cost-config")
+async def get_cost_config(
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    result = await db.execute(select(CostConfig))
+    configs = result.scalars().all()
+    return [{"key": c.key, "value": c.value, "label": c.label} for c in configs]
+
+
+@router.put("/cost-config/{key}")
+async def update_cost_config(
+    key: str,
+    body: CostConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    result = await db.execute(select(CostConfig).where(CostConfig.key == key))
+    existing = result.scalar_one_or_none()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Clé de coût introuvable")
+    existing.value = body.value
+    existing.updated_at = datetime.now(timezone.utc)
+    await db.flush()
+    return {"key": key, "value": body.value}
+
+
+# ── API Usage Tracking ────────────────────────────────────────────────
+
+@router.get("/usage")
+async def get_usage_stats(
+    start: Optional[str] = Query(None, description="Start date ISO (YYYY-MM-DD)"),
+    end: Optional[str] = Query(None, description="End date ISO (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Get aggregated usage stats, optionally filtered by date range."""
+    query = select(ApiUsageLog)
+    if start:
+        query = query.where(ApiUsageLog.created_at >= datetime.fromisoformat(start))
+    if end:
+        end_dt = datetime.fromisoformat(end).replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        query = query.where(ApiUsageLog.created_at <= end_dt)
+
+    result = await db.execute(query.order_by(ApiUsageLog.created_at.desc()))
+    logs = result.scalars().all()
+
+    # Aggregate
+    mistral_tokens_in = sum(l.tokens_in for l in logs if l.service == "mistral")
+    mistral_tokens_out = sum(l.tokens_out for l in logs if l.service == "mistral")
+    elevenlabs_chars = sum(l.characters for l in logs if l.service == "elevenlabs")
+    mistral_calls = sum(1 for l in logs if l.service == "mistral")
+    elevenlabs_calls = sum(1 for l in logs if l.service == "elevenlabs")
+
+    # Per-evaluation breakdown
+    eval_map: dict[int, dict] = {}
+    for l in logs:
+        eid = l.evaluation_id or 0
+        if eid not in eval_map:
+            eval_map[eid] = {
+                "evaluation_id": eid,
+                "user_id": l.user_id,
+                "mistral_tokens_in": 0,
+                "mistral_tokens_out": 0,
+                "elevenlabs_chars": 0,
+                "calls": 0,
+                "first_call": l.created_at.isoformat(),
+                "last_call": l.created_at.isoformat(),
+            }
+        entry = eval_map[eid]
+        if l.service == "mistral":
+            entry["mistral_tokens_in"] += l.tokens_in
+            entry["mistral_tokens_out"] += l.tokens_out
+        elif l.service == "elevenlabs":
+            entry["elevenlabs_chars"] += l.characters
+        entry["calls"] += 1
+        if l.created_at.isoformat() < entry["first_call"]:
+            entry["first_call"] = l.created_at.isoformat()
+        if l.created_at.isoformat() > entry["last_call"]:
+            entry["last_call"] = l.created_at.isoformat()
+
+    # Enrich with user info
+    user_ids = {e["user_id"] for e in eval_map.values() if e["user_id"]}
+    if user_ids:
+        users_result = await db.execute(select(User).where(User.id.in_(user_ids)))
+        users = {u.id: u.full_name for u in users_result.scalars().all()}
+    else:
+        users = {}
+
+    evals_result = await db.execute(select(Evaluation))
+    evals_map = {e.id: e for e in evals_result.scalars().all()}
+
+    per_eval = []
+    for entry in sorted(eval_map.values(), key=lambda e: e["last_call"], reverse=True):
+        entry["user_name"] = users.get(entry["user_id"], "N/A")
+        ev = evals_map.get(entry["evaluation_id"])
+        entry["eval_status"] = ev.status.value if ev else None
+        per_eval.append(entry)
+
+    return {
+        "totals": {
+            "mistral_tokens_in": mistral_tokens_in,
+            "mistral_tokens_out": mistral_tokens_out,
+            "elevenlabs_chars": elevenlabs_chars,
+            "mistral_calls": mistral_calls,
+            "elevenlabs_calls": elevenlabs_calls,
+        },
+        "per_evaluation": per_eval,
+    }
