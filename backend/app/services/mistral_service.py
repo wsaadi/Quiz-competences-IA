@@ -178,7 +178,7 @@ Le progress va de 0 à 100
 job_role et job_domain doivent être remplis dès que le candidat les communique.
 
 Quand la phase est SCORING (dernière interaction), le JSON doit contenir les scores :
-<eval_meta>{"phase":"SCORING","progress":100,"scores":{"market_knowledge":70,"terminology":65,"interest_curiosity":80,"personal_watch":55,"technical_level":60,"ai_usage":75,"integration_deployment":40,"conception_dev":35},"detected_level":"intermediaire","feedback_collaborator":"[feedback encourageant 3-5 phrases]","feedback_admin":"[feedback détaillé et objectif 5-8 phrases incluant le profil métier évalué, les points forts, les axes d'amélioration et des recommandations de formation]","job_role":"[poste du candidat]","job_domain":"[domaine métier]"}</eval_meta>
+<eval_meta>{"phase":"SCORING","progress":100,"scores":{"market_knowledge":70,"terminology":65,"interest_curiosity":80,"personal_watch":55,"technical_level":60,"ai_usage":75,"integration_deployment":40,"conception_dev":35},"detected_level":"intermediaire","feedback_collaborator":"[feedback encourageant 3-5 phrases]","feedback_admin":{"synthese":"[2-3 phrases de synthèse globale avec profil métier et niveau général]","domaines":{"market_knowledge":{"score":70,"niveau":"Avancé","constats":"[ce qui a été observé concrètement pendant l'évaluation]","points_forts":"[compétences démontrées]","lacunes":"[manques identifiés]","recommandations":"[actions de formation ou montée en compétence]"},"terminology":{"score":65,"niveau":"Intermédiaire","constats":"...","points_forts":"...","lacunes":"...","recommandations":"..."},"interest_curiosity":{"score":80,"niveau":"...","constats":"...","points_forts":"...","lacunes":"...","recommandations":"..."},"personal_watch":{"score":55,"niveau":"...","constats":"...","points_forts":"...","lacunes":"...","recommandations":"..."},"technical_level":{"score":60,"niveau":"...","constats":"...","points_forts":"...","lacunes":"...","recommandations":"..."},"ai_usage":{"score":75,"niveau":"...","constats":"...","points_forts":"...","lacunes":"...","recommandations":"..."},"integration_deployment":{"score":40,"niveau":"...","constats":"...","points_forts":"...","lacunes":"...","recommandations":"..."},"conception_dev":{"score":35,"niveau":"...","constats":"...","points_forts":"...","lacunes":"...","recommandations":"..."}},"points_forts_globaux":"[3-5 points forts principaux identifiés]","axes_amelioration":"[3-5 axes prioritaires de progression]","plan_action":"[recommandations concrètes de formation adaptées au poste et au niveau]"},"job_role":"[poste du candidat]","job_domain":"[domaine métier]"}</eval_meta>
 
 [Message de conclusion]
 """
@@ -444,9 +444,20 @@ async def generate_final_scoring(conversation_history: list[dict]) -> tuple[str,
         "Évalue chaque domaine de 0 à 100 en te basant sur TOUTE la conversation et en appliquant la GRILLE DE NOTATION STRICTE. "
         "RAPPEL : connaître quelques termes (LLM, prompt, token) et avoir utilisé Copilot = score 35-45 maximum, pas plus. "
         "Seules des preuves concrètes d'application et de compréhension profonde justifient des scores élevés. "
-        "Rédige un feedback_collaborator encourageant et bienveillant (3-5 phrases). "
-        "Rédige un feedback_admin détaillé et objectif (5-8 phrases incluant le profil métier, les points forts, "
-        "les axes d'amélioration et des recommandations de formation adaptées au poste). "
+        "Rédige un feedback_collaborator encourageant et bienveillant (3-5 phrases, texte simple). "
+        "Rédige un feedback_admin STRUCTURÉ en objet JSON avec : "
+        "- synthese : 2-3 phrases de synthèse globale (profil métier, niveau général, impression d'ensemble). "
+        "- domaines : un objet avec pour CHAQUE domaine (market_knowledge, terminology, interest_curiosity, "
+        "personal_watch, technical_level, ai_usage, integration_deployment, conception_dev) un sous-objet contenant : "
+        "score (le score 0-100), niveau (Débutant/Intermédiaire/Avancé/Expert), "
+        "constats (ce qui a été observé concrètement pendant l'échange), "
+        "points_forts (compétences démontrées avec preuves), "
+        "lacunes (manques identifiés), "
+        "recommandations (actions concrètes de formation ou montée en compétence). "
+        "- points_forts_globaux : les 3-5 points forts principaux du candidat. "
+        "- axes_amelioration : les 3-5 axes prioritaires de progression. "
+        "- plan_action : recommandations concrètes de formation adaptées au poste et au niveau actuel. "
+        "Sois FACTUEL et OBJECTIF dans le feedback admin : cite des éléments concrets de la conversation. "
         "Détermine le detected_level parmi : debutant, intermediaire, avance, expert. "
         "Inclus le job_role et job_domain du candidat dans le JSON."
     )
