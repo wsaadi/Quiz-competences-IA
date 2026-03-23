@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import AsyncGenerator
 
 import httpx
 
@@ -54,7 +55,18 @@ SYSTEM_PROMPT = """Tu es Aria, une évaluatrice IA sympathique et bienveillante.
 - Tu ne portes JAMAIS de jugement de valeur
 - Tu encourages toujours, même quand la réponse est fausse
 - Tu utilises un ton conversationnel naturel
-- Tu peux utiliser des émojis avec modération pour rendre la conversation vivante
+
+## IMPORTANT — Tes réponses sont lues à voix haute par synthèse vocale
+Tes messages seront convertis en parole via synthèse vocale. Tu DOIS donc :
+- NE JAMAIS utiliser d'émojis ni de symboles spéciaux (pas de ✅, ❌, 🎯, 💡, etc.)
+- NE JAMAIS utiliser de listes à puces (pas de tirets -, ni de *, ni de •, ni de numérotation 1. 2. 3.)
+- NE JAMAIS utiliser de mise en forme markdown (pas de **gras**, pas de *italique*, pas de `code`)
+- Écrire uniquement en phrases complètes, fluides et naturelles, comme si tu parlais vraiment
+- Utiliser des phrases courtes à moyennes, séparées par des virgules et des points pour un rythme naturel
+- Enchaîner les idées avec des connecteurs oraux naturels : "alors", "du coup", "en fait", "par exemple", "et puis", "d'ailleurs"
+- Quand tu veux énumérer des éléments, les intégrer dans une phrase fluide : "il y a d'abord X, ensuite Y, et enfin Z"
+- Épeler les sigles lettre par lettre en les séparant par des points : I.A., L.L.M., R.A.G., A.P.I.
+- Éviter les parenthèses longues, préférer des phrases séparées
 
 ## Ton rôle
 Tu évalues les compétences IA à travers une conversation naturelle de ~30 minutes.
@@ -223,6 +235,85 @@ async def call_mistral(messages: list[dict]) -> str:
 
     # Should not reach here, but just in case
     raise last_exception or httpx.ConnectError("Mistral API unreachable after retries")
+
+
+async def stream_mistral(messages: list[dict]) -> AsyncGenerator[str, None]:
+    """Stream Mistral AI chat completion, yielding text chunks as they arrive."""
+    headers = {
+        "Authorization": f"Bearer {settings.MISTRAL_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": settings.MISTRAL_MODEL,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 2000,
+        "stream": True,
+    }
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0)) as client:
+        async with client.stream("POST", MISTRAL_CHAT_URL, json=payload, headers=headers) as response:
+            if response.status_code != 200:
+                error_body = await response.aread()
+                logger.error("Mistral streaming error %s: %s", response.status_code, error_body[:300])
+                # Fallback to non-streaming
+                fallback = await call_mistral(messages)
+                yield fallback
+                return
+
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    data = json.loads(data_str)
+                    delta = data.get("choices", [{}])[0].get("delta", {})
+                    content = delta.get("content", "")
+                    if content:
+                        yield content
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+
+
+# Sentence boundary detection for streaming TTS pipeline
+_SENTENCE_TERMINATORS = frozenset(".!?…")
+_CLAUSE_SEPARATORS = frozenset(",;:")
+
+
+def split_into_sentences(text: str) -> tuple[list[str], str]:
+    """Split text at sentence boundaries, returning (complete_sentences, remaining_buffer).
+
+    Splits at . ! ? … and also at , ; : if the clause is long enough (>80 chars)
+    to feed ElevenLabs with natural-sounding chunks.
+    """
+    sentences: list[str] = []
+    current = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        current += ch
+
+        if ch in _SENTENCE_TERMINATORS:
+            # Look ahead: skip if followed by more terminators or digits (e.g. "1.5")
+            if i + 1 < len(text) and (text[i + 1].isdigit() or text[i + 1] in _SENTENCE_TERMINATORS):
+                i += 1
+                continue
+            sentence = current.strip()
+            if sentence:
+                sentences.append(sentence)
+            current = ""
+        elif ch in _CLAUSE_SEPARATORS and len(current.strip()) > 80:
+            # Split at clause separator if the chunk is long enough for smooth TTS
+            sentence = current.strip()
+            if sentence:
+                sentences.append(sentence)
+            current = ""
+
+        i += 1
+
+    return sentences, current
 
 
 def parse_eval_meta(response_text: str) -> tuple[dict | None, str]:

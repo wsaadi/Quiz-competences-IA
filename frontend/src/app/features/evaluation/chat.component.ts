@@ -536,6 +536,22 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   private currentAudio: HTMLAudioElement | null = null;
   private ttsAbortController: AbortController | null = null;
 
+  // Voice Activity Detection (VAD)
+  private audioContext: AudioContext | null = null;
+  private analyserNode: AnalyserNode | null = null;
+  private vadStream: MediaStream | null = null;
+  private vadCheckInterval: any = null;
+  private silenceStartTime = 0;
+  private readonly SILENCE_THRESHOLD = 15;      // RMS amplitude threshold (0-128)
+  private readonly SILENCE_DURATION_MS = 1500;   // 1.5s of silence → stop recording
+  private readonly MIN_RECORDING_MS = 500;       // Minimum recording duration
+  private recordingStartTime = 0;
+
+  // TTS sentence queue for streaming pipeline
+  private ttsSentenceQueue: string[] = [];
+  private ttsPlaying = false;
+  private streamAbortController: AbortController | null = null;
+
   private lastFailedMessage = '';
 
   userName = computed(() => this.authService.currentUser()?.fullName ?? 'Collaborateur');
@@ -559,8 +575,7 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     private authService: AuthService,
     private router: Router
   ) {
-    // Initialize Speech-to-Text: prefer MediaRecorder (for server-side Scribe STT),
-    // fall back to browser Web Speech API for real-time interim results.
+    // MediaRecorder is the preferred recording method (for server-side ElevenLabs Scribe)
     if (navigator.mediaDevices && typeof MediaRecorder !== 'undefined') {
       this.speechSupported = true;
     } else {
@@ -591,6 +606,7 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.stopSpeaking();
     this.stopRecordingCleanup();
+    this.cleanupVAD();
   }
 
   ngAfterViewChecked(): void {
@@ -666,13 +682,17 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     });
   }
 
+  /**
+   * Send message using streaming SSE endpoint.
+   * Mistral streams text sentence-by-sentence → each sentence is immediately
+   * sent to ElevenLabs TTS for parallel audio playback.
+   * Falls back to non-streaming endpoint on error.
+   */
   sendMessage(): void {
     const text = this.userMessage.trim();
     if (!text || !this.evaluationId() || this.sending()) return;
 
-    // Stop recording if active
     this.stopRecordingCleanup();
-
     this.errorMessage.set(null);
     this.messages.update((m) => [
       ...m,
@@ -683,6 +703,94 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     this.avatarMood.set('thinking');
     this.shouldScroll = true;
 
+    if (this.autoTTS()) {
+      this.sendMessageStreaming(text);
+    } else {
+      this.sendMessageClassic(text);
+    }
+  }
+
+  /** Streaming path: SSE for text + parallel TTS per sentence */
+  private async sendMessageStreaming(text: string): Promise<void> {
+    const { token } = this.evaluationService.getTTSStreamInfo();
+    const url = `${this.evaluationService.getApiUrl()}/evaluations/${this.evaluationId()}/chat-stream`;
+    this.streamAbortController = new AbortController();
+    this.ttsSentenceQueue = [];
+    this.ttsPlaying = false;
+    let fullResponse = '';
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ message: text }),
+        signal: this.streamAbortController.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Stream failed: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith('data: ') && eventType) {
+            const data = line.slice(6);
+            try {
+              const parsed = JSON.parse(data);
+
+              if (eventType === 'sentence') {
+                // Queue sentence for TTS and start playing immediately
+                const sentenceText = parsed.text;
+                if (sentenceText) {
+                  this.enqueueTTSSentence(sentenceText);
+                }
+              } else if (eventType === 'done') {
+                fullResponse = parsed.response || '';
+                this.sending.set(false);
+                this.lastFailedMessage = '';
+                this.messages.update((m) => [
+                  ...m,
+                  { role: 'assistant', content: fullResponse, timestamp: new Date() },
+                ]);
+                this.progress.set(parsed.progress_percent || 50);
+                this.currentPhase.set(parsed.phase || 'EXPLORATION');
+                this.isComplete.set(parsed.is_complete || false);
+                this.avatarMood.set(parsed.is_complete ? 'happy' : 'encouraging');
+                this.shouldScroll = true;
+              }
+            } catch {
+              // Skip malformed JSON
+            }
+            eventType = '';
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return;
+      // Fallback to classic non-streaming endpoint
+      this.sendMessageClassic(text);
+    }
+  }
+
+  /** Classic non-streaming path (fallback) */
+  private sendMessageClassic(text: string): void {
     this.evaluationService.sendMessage(this.evaluationId()!, text).subscribe({
       next: (res) => {
         this.sending.set(false);
@@ -763,7 +871,7 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
       .replace(/\n/g, '<br>');
   }
 
-  // ── Speech-to-Text (ElevenLabs Scribe via MediaRecorder, with Web Speech API fallback) ──
+  // ── Speech-to-Text with Voice Activity Detection (auto-stop on silence) ──
 
   toggleRecording(): void {
     if (this.isRecording()) {
@@ -774,10 +882,15 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   }
 
   private startRecording(): void {
-    // Prefer MediaRecorder → server-side ElevenLabs Scribe (better for technical terms)
     if (navigator.mediaDevices && typeof MediaRecorder !== 'undefined') {
       navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
         this.audioChunks = [];
+        this.vadStream = stream;
+        this.recordingStartTime = Date.now();
+
+        // Set up Voice Activity Detection (VAD) using Web Audio API
+        this.setupVAD(stream);
+
         this.mediaRecorder = new MediaRecorder(stream, { mimeType: this.getRecordingMimeType() });
         this.mediaRecorder.ondataavailable = (event) => {
           if (event.data.size > 0) {
@@ -785,22 +898,87 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
           }
         };
         this.mediaRecorder.onstop = () => {
-          // Stop all tracks to release microphone
+          this.cleanupVAD();
           stream.getTracks().forEach((t) => t.stop());
           const audioBlob = new Blob(this.audioChunks, { type: this.getRecordingMimeType() });
           if (audioBlob.size > 0) {
-            this.transcribeWithScribe(audioBlob);
+            this.transcribeAndAutoSend(audioBlob);
           }
         };
-        this.mediaRecorder.start();
+        this.mediaRecorder.start(250); // Collect data every 250ms for responsive stop
         this.isRecording.set(true);
       }).catch(() => {
-        // Microphone access denied — fall back to browser STT
         this.fallbackBrowserSTT();
       });
     } else {
       this.fallbackBrowserSTT();
     }
+  }
+
+  /**
+   * Voice Activity Detection: monitors audio amplitude and automatically
+   * stops recording after SILENCE_DURATION_MS of silence.
+   */
+  private setupVAD(stream: MediaStream): void {
+    try {
+      this.audioContext = new AudioContext();
+      const source = this.audioContext.createMediaStreamSource(stream);
+      this.analyserNode = this.audioContext.createAnalyser();
+      this.analyserNode.fftSize = 512;
+      this.analyserNode.smoothingTimeConstant = 0.3;
+      source.connect(this.analyserNode);
+
+      const dataArray = new Uint8Array(this.analyserNode.fftSize);
+      this.silenceStartTime = 0;
+
+      this.vadCheckInterval = setInterval(() => {
+        if (!this.analyserNode || !this.isRecording()) {
+          this.cleanupVAD();
+          return;
+        }
+
+        this.analyserNode.getByteTimeDomainData(dataArray);
+
+        // Calculate RMS amplitude
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          const val = dataArray[i] - 128;
+          sum += val * val;
+        }
+        const rms = Math.sqrt(sum / dataArray.length);
+
+        const now = Date.now();
+        const recordingDuration = now - this.recordingStartTime;
+
+        if (rms < this.SILENCE_THRESHOLD) {
+          if (this.silenceStartTime === 0) {
+            this.silenceStartTime = now;
+          }
+          const silenceDuration = now - this.silenceStartTime;
+          // Auto-stop if enough silence AND we've recorded enough audio
+          if (silenceDuration >= this.SILENCE_DURATION_MS && recordingDuration >= this.MIN_RECORDING_MS) {
+            this.stopRecording();
+          }
+        } else {
+          // Reset silence timer when sound is detected
+          this.silenceStartTime = 0;
+        }
+      }, 100); // Check every 100ms
+    } catch {
+      // VAD setup failed — recording still works, just no auto-stop
+    }
+  }
+
+  private cleanupVAD(): void {
+    if (this.vadCheckInterval) {
+      clearInterval(this.vadCheckInterval);
+      this.vadCheckInterval = null;
+    }
+    if (this.audioContext) {
+      this.audioContext.close().catch(() => {});
+      this.audioContext = null;
+    }
+    this.analyserNode = null;
   }
 
   private stopRecording(): void {
@@ -814,6 +992,7 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   }
 
   private stopRecordingCleanup(): void {
+    this.cleanupVAD();
     if (this.isRecording()) {
       this.stopRecording();
     }
@@ -826,21 +1005,27 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     return 'audio/webm';
   }
 
-  private transcribeWithScribe(audioBlob: Blob): void {
+  /**
+   * Transcribe audio via ElevenLabs Scribe, then automatically send the
+   * transcribed text as a chat message for maximum reactivity.
+   */
+  private transcribeAndAutoSend(audioBlob: Blob): void {
     this.isTranscribing.set(true);
-    this.evaluationService.transcribeAudio(audioBlob).subscribe({
+    const mimeType = this.getRecordingMimeType();
+    const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+    this.evaluationService.transcribeAudio(audioBlob, `audio.${ext}`).subscribe({
       next: (result) => {
         this.isTranscribing.set(false);
-        if (result.text) {
-          // Append to existing text (user might have typed something)
+        if (result.text && result.text.trim()) {
           this.userMessage = this.userMessage
-            ? this.userMessage + ' ' + result.text
-            : result.text;
+            ? this.userMessage + ' ' + result.text.trim()
+            : result.text.trim();
+          // Auto-send the transcribed message
+          this.sendMessage();
         }
       },
       error: () => {
         this.isTranscribing.set(false);
-        // If server STT fails, the user still has their typed text
       },
     });
   }
@@ -851,7 +1036,41 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     this.isRecording.set(true);
   }
 
-  // ── Text-to-Speech (streaming ElevenLabs with browser fallback) ──
+  // ── TTS Sentence Queue (streaming pipeline: Mistral → sentence → ElevenLabs) ──
+
+  /**
+   * Queue a sentence for TTS playback. Sentences are played in order,
+   * each one starting ElevenLabs streaming as soon as the previous finishes.
+   */
+  private enqueueTTSSentence(sentence: string): void {
+    this.ttsSentenceQueue.push(sentence);
+    if (!this.ttsPlaying) {
+      this.playNextSentence();
+    }
+  }
+
+  private async playNextSentence(): Promise<void> {
+    if (this.ttsSentenceQueue.length === 0) {
+      this.ttsPlaying = false;
+      this.isSpeaking.set(false);
+      return;
+    }
+
+    this.ttsPlaying = true;
+    this.isSpeaking.set(true);
+    const sentence = this.ttsSentenceQueue.shift()!;
+
+    try {
+      await this.speakWithStreaming(sentence);
+    } catch {
+      // Continue with next sentence on error
+    }
+
+    // Play next sentence in queue
+    this.playNextSentence();
+  }
+
+  // ── Text-to-Speech (streaming ElevenLabs) ──
 
   speakMessage(text: string): void {
     if (this.isSpeaking()) {
@@ -863,14 +1082,6 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     this.speakWithStreaming(text);
   }
 
-  /**
-   * Streaming TTS: uses fetch() to stream audio chunks from the backend,
-   * enabling playback to start within ~200-500ms instead of waiting for
-   * the full audio generation (~2-3s).
-   *
-   * Uses MediaSource API where supported (Chrome/Edge) for true streaming
-   * playback. Falls back to buffered blob playback for other browsers.
-   */
   private async speakWithStreaming(text: string): Promise<void> {
     const { url, token } = this.evaluationService.getTTSStreamInfo();
     this.ttsAbortController = new AbortController();
@@ -890,18 +1101,16 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
         throw new Error(`TTS request failed: ${response.status}`);
       }
 
-      // Try streaming playback via MediaSource API (Chrome/Edge)
       if (this.supportsStreamingAudio()) {
         await this.playStreamingAudio(response.body);
       } else {
-        // Fallback: buffer the entire response then play
         const blob = await response.blob();
-        this.playBlobAudio(blob);
+        await this.playBlobAudio(blob);
       }
     } catch (err: any) {
-      if (err?.name === 'AbortError') return; // User cancelled
-      // Fallback to browser TTS
-      this.browserTTSFallback(text);
+      if (err?.name === 'AbortError') return;
+      // No browser fallback — ElevenLabs only as requested
+      this.isSpeaking.set(false);
     }
   }
 
@@ -952,7 +1161,6 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
             pendingChunks.push(value);
             appendNext();
 
-            // Start playback as soon as we have first chunk
             if (audio.paused) {
               audio.play().catch(() => {});
             }
@@ -978,50 +1186,46 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
     });
   }
 
-  private playBlobAudio(blob: Blob): void {
-    const url = URL.createObjectURL(blob);
-    this.currentAudio = new Audio(url);
-    this.currentAudio.onended = () => {
-      this.isSpeaking.set(false);
-      URL.revokeObjectURL(url);
-      this.currentAudio = null;
-    };
-    this.currentAudio.onerror = () => {
-      URL.revokeObjectURL(url);
-      this.currentAudio = null;
-      this.isSpeaking.set(false);
-    };
-    this.currentAudio.play().catch(() => this.isSpeaking.set(false));
-  }
-
-  private browserTTSFallback(text: string): void {
-    if (!('speechSynthesis' in window)) {
-      this.isSpeaking.set(false);
-      return;
-    }
-    const clean = text
-      .replace(/\*\*(.*?)\*\*/g, '$1')
-      .replace(/\*(.*?)\*/g, '$1')
-      .replace(/[^\p{L}\p{N}\p{P}\p{Z}]/gu, '');
-    const utterance = new SpeechSynthesisUtterance(clean);
-    utterance.lang = 'fr-FR';
-    utterance.rate = 1.05;
-    utterance.onend = () => this.isSpeaking.set(false);
-    utterance.onerror = () => this.isSpeaking.set(false);
-    window.speechSynthesis.speak(utterance);
+  private playBlobAudio(blob: Blob): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const url = URL.createObjectURL(blob);
+      this.currentAudio = new Audio(url);
+      this.currentAudio.onended = () => {
+        this.isSpeaking.set(false);
+        URL.revokeObjectURL(url);
+        this.currentAudio = null;
+        resolve();
+      };
+      this.currentAudio.onerror = () => {
+        URL.revokeObjectURL(url);
+        this.currentAudio = null;
+        this.isSpeaking.set(false);
+        resolve();
+      };
+      this.currentAudio.play().catch(() => {
+        this.isSpeaking.set(false);
+        resolve();
+      });
+    });
   }
 
   private stopSpeaking(): void {
+    // Cancel ongoing stream
+    if (this.streamAbortController) {
+      this.streamAbortController.abort();
+      this.streamAbortController = null;
+    }
     if (this.ttsAbortController) {
       this.ttsAbortController.abort();
       this.ttsAbortController = null;
     }
+    // Clear sentence queue
+    this.ttsSentenceQueue = [];
+    this.ttsPlaying = false;
+
     if (this.currentAudio) {
       this.currentAudio.pause();
       this.currentAudio = null;
-    }
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
     }
     this.isSpeaking.set(false);
   }
