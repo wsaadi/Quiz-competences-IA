@@ -7,6 +7,7 @@ import {
   AfterViewChecked,
   OnInit,
   OnDestroy,
+  NgZone,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -580,7 +581,8 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   constructor(
     private evaluationService: EvaluationService,
     private authService: AuthService,
-    private router: Router
+    private router: Router,
+    private ngZone: NgZone
   ) {
     if (navigator.mediaDevices && typeof MediaRecorder !== 'undefined') {
       this.speechSupported = true;
@@ -750,26 +752,30 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
                 const sentenceText = parsed.text;
                 if (sentenceText) {
                   fullResponse += (fullResponse ? ' ' : '') + sentenceText;
-                  this.streamingResponse.set(fullResponse);
-                  this.shouldScroll = true;
+                  this.ngZone.run(() => {
+                    this.streamingResponse.set(fullResponse);
+                    this.shouldScroll = true;
+                  });
                   if (this.autoTTS()) {
                     this.enqueueTTSSentence(sentenceText);
                   }
                 }
               } else if (eventType === 'done') {
                 const finalResponse = parsed.response || fullResponse;
-                this.streamingResponse.set('');
-                this.sending.set(false);
-                this.lastFailedMessage = '';
-                this.messages.update((m) => [
-                  ...m,
-                  { role: 'assistant', content: finalResponse, timestamp: new Date() },
-                ]);
-                this.progress.set(parsed.progress_percent || 50);
-                this.currentPhase.set(parsed.phase || 'EXPLORATION');
-                this.isComplete.set(parsed.is_complete || false);
-                this.avatarMood.set(parsed.is_complete ? 'happy' : 'encouraging');
-                this.shouldScroll = true;
+                this.ngZone.run(() => {
+                  this.streamingResponse.set('');
+                  this.sending.set(false);
+                  this.lastFailedMessage = '';
+                  this.messages.update((m) => [
+                    ...m,
+                    { role: 'assistant', content: finalResponse, timestamp: new Date() },
+                  ]);
+                  this.progress.set(parsed.progress_percent || 50);
+                  this.currentPhase.set(parsed.phase || 'EXPLORATION');
+                  this.isComplete.set(parsed.is_complete || false);
+                  this.avatarMood.set(parsed.is_complete ? 'happy' : 'encouraging');
+                  this.shouldScroll = true;
+                });
               }
             } catch {
               // Skip malformed JSON
@@ -889,6 +895,11 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
       this.userMessage = '';
       this.isRecording.set(true);
 
+      // Auto-enable TTS when user records voice (natural expectation: speak → hear back)
+      if (!this.autoTTS()) {
+        this.autoTTS.set(true);
+      }
+
       // Start MediaRecorder as backup (for non-realtime fallback)
       this.mediaRecorder = new MediaRecorder(stream, { mimeType: this.getRecordingMimeType() });
       this.mediaRecorder.ondataavailable = (event) => {
@@ -921,57 +932,79 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
         },
       });
 
-      if (!tokenRes.ok) return; // Fallback to batch transcription on stop
+      if (!tokenRes.ok) {
+        console.warn('[STT] Token request failed:', tokenRes.status);
+        return;
+      }
 
       const { token: sttToken } = await tokenRes.json();
-      if (!sttToken) return;
+      if (!sttToken) {
+        console.warn('[STT] Empty token received');
+        return;
+      }
+
+      console.log('[STT] Got single-use token, connecting WebSocket...');
 
       // Connect WebSocket to ElevenLabs realtime STT
       const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?token=${sttToken}&language_code=fra&model_id=scribe_v2_realtime&sample_rate=16000&encoding=pcm_s16le`;
       this.sttWebSocket = new WebSocket(wsUrl);
 
+      // Wait for WebSocket to open before streaming audio
+      await new Promise<void>((resolve, reject) => {
+        this.sttWebSocket!.onopen = () => {
+          console.log('[STT] WebSocket connected');
+          resolve();
+        };
+        this.sttWebSocket!.onerror = (err) => {
+          console.error('[STT] WebSocket error:', err);
+          reject(err);
+        };
+        this.sttWebSocket!.onclose = (ev) => {
+          console.warn('[STT] WebSocket closed:', ev.code, ev.reason);
+        };
+        setTimeout(() => reject(new Error('WebSocket timeout')), 5000);
+      });
+
       this.sttWebSocket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          console.log('[STT] Message:', msg.message_type, msg.text ?? '');
           if (msg.message_type === 'partial_transcript' && msg.text) {
-            // Show committed text + live partial
             this.userMessage = (this.sttCommittedText + ' ' + msg.text).trim();
           } else if (msg.message_type === 'committed_transcript' && msg.text) {
             this.sttCommittedText = (this.sttCommittedText + ' ' + msg.text).trim();
             this.userMessage = this.sttCommittedText;
           }
-        } catch {}
+        } catch (e) {
+          console.error('[STT] Parse error:', e);
+        }
       };
 
-      this.sttWebSocket.onerror = () => {
+      this.sttWebSocket.onerror = (err) => {
+        console.error('[STT] WebSocket error (streaming):', err);
         this.cleanupRealtimeSTT();
       };
 
-      // Wait for WebSocket to open before streaming audio
-      await new Promise<void>((resolve, reject) => {
-        this.sttWebSocket!.onopen = () => resolve();
-        this.sttWebSocket!.onerror = () => reject();
-        setTimeout(() => reject(), 5000);
-      });
+      this.sttWebSocket.onclose = (ev) => {
+        console.warn('[STT] WebSocket closed (streaming):', ev.code, ev.reason);
+      };
 
       // Set up AudioContext to capture 16kHz mono PCM and send via WebSocket
       this.sttAudioContext = new AudioContext({ sampleRate: 16000 });
       const source = this.sttAudioContext.createMediaStreamSource(stream);
-      // ScriptProcessorNode with 4096 buffer, 1 input channel, 1 output channel
       this.sttProcessor = this.sttAudioContext.createScriptProcessor(4096, 1, 1);
 
+      let chunkCount = 0;
       this.sttProcessor.onaudioprocess = (e) => {
         if (!this.sttWebSocket || this.sttWebSocket.readyState !== WebSocket.OPEN) return;
 
         const float32 = e.inputBuffer.getChannelData(0);
-        // Convert Float32 [-1,1] to Int16 PCM
         const int16 = new Int16Array(float32.length);
         for (let i = 0; i < float32.length; i++) {
           const s = Math.max(-1, Math.min(1, float32[i]));
           int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
-        // Base64 encode the PCM data
         const bytes = new Uint8Array(int16.buffer);
         let binary = '';
         for (let i = 0; i < bytes.byteLength; i++) {
@@ -983,12 +1016,18 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
           message_type: 'input_audio_chunk',
           audio_base_64: base64,
         }));
+
+        chunkCount++;
+        if (chunkCount % 20 === 0) {
+          console.log(`[STT] Sent ${chunkCount} audio chunks`);
+        }
       };
 
       source.connect(this.sttProcessor);
       this.sttProcessor.connect(this.sttAudioContext.destination);
-    } catch {
-      // WebSocket setup failed — will fall back to batch transcription
+      console.log('[STT] Audio pipeline started (16kHz PCM)');
+    } catch (err) {
+      console.error('[STT] Setup failed:', err);
       this.cleanupRealtimeSTT();
     }
   }
@@ -1012,18 +1051,20 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
 
   private stopRecording(): void {
     const hadRealtimeSTT = !!this.sttWebSocket;
+    const realtimeText = this.userMessage.trim();
+    console.log(`[STT] Stop recording — realtime=${hadRealtimeSTT}, text="${realtimeText}"`);
     this.cleanupRealtimeSTT();
     this.isRecording.set(false);
 
     if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
-      // If realtime STT produced text, use it immediately (skip batch transcription)
-      if (hadRealtimeSTT && this.userMessage.trim()) {
+      if (hadRealtimeSTT && realtimeText) {
+        console.log('[STT] Using realtime transcript, sending immediately');
         this.mediaRecorder.stop();
         this.sttStream?.getTracks().forEach((t) => t.stop());
         this.sttStream = null;
         this.sendMessage();
       } else {
-        // Fallback: batch transcribe via ElevenLabs Scribe
+        console.log('[STT] Falling back to batch transcription');
         this.mediaRecorder.onstop = () => {
           this.sttStream?.getTracks().forEach((t) => t.stop());
           this.sttStream = null;
