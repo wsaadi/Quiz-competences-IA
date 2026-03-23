@@ -291,17 +291,24 @@ import { environment } from '../../../environments/environment';
                         <div class="eval-actions">
                           <button
                             mat-stroked-button
-                            (click)="loadConversation(ev)"
-                            *ngIf="!ev.messages?.length"
+                            (click)="loadEvalConversation(ev.id)"
+                            *ngIf="!evalMessages()[ev.id]"
                           >
                             <mat-icon>chat</mat-icon> Voir la conversation
                           </button>
+                          <button
+                            mat-stroked-button
+                            (click)="hideEvalConversation(ev.id)"
+                            *ngIf="evalMessages()[ev.id]"
+                          >
+                            <mat-icon>visibility_off</mat-icon> Masquer la conversation
+                          </button>
                         </div>
 
-                        <div class="conversation" *ngIf="ev.messages?.length">
-                          <h4>Conversation ({{ ev.messages.length }} messages)</h4>
+                        <div class="conversation" *ngIf="evalMessages()[ev.id] as msgs">
+                          <h4>Conversation ({{ msgs.length }} messages)</h4>
                           <div
-                            *ngFor="let msg of ev.messages"
+                            *ngFor="let msg of msgs"
                             class="conv-msg"
                             [class.conv-user]="msg.role === 'user'"
                             [class.conv-ai]="msg.role === 'assistant'"
@@ -1065,6 +1072,7 @@ export class AdminComponent implements OnInit {
   stats = signal<GlobalStats | null>(null);
   selectedFiche = signal<CollaborateurFiche | null>(null);
   ficheMessages = signal<Record<number, any[]>>({});
+  evalMessages = signal<Record<number, any[]>>({});
   creatingUser = signal(false);
 
   // Config
@@ -1315,16 +1323,22 @@ export class AdminComponent implements OnInit {
     });
   }
 
-  loadConversation(ev: EvaluationDetail): void {
-    this.adminService.getEvaluationDetail(ev.id).subscribe((detail) => {
-      const idx = this.evaluations().findIndex((e) => e.id === ev.id);
-      if (idx >= 0) {
-        this.evaluations.update((list) => {
-          const copy = [...list];
-          copy[idx] = detail;
-          return copy;
-        });
-      }
+  loadEvalConversation(evalId: number): void {
+    this.adminService.getEvaluationDetail(evalId).subscribe({
+      next: (detail) => {
+        this.evalMessages.update((map) => ({
+          ...map,
+          [evalId]: detail.messages || [],
+        }));
+      },
+    });
+  }
+
+  hideEvalConversation(evalId: number): void {
+    this.evalMessages.update((map) => {
+      const copy = { ...map };
+      delete copy[evalId];
+      return copy;
     });
   }
 
