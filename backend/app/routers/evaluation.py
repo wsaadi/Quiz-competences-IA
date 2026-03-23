@@ -1,18 +1,27 @@
 """Evaluation router — handles chat sessions and evaluation lifecycle."""
 
+import json
 from datetime import datetime, timezone
 
 import bleach
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_db, async_session
 from app.models.evaluation import Evaluation, EvaluationMessage, EvaluationStatus
 from app.models.schemas import ChatMessage, ChatResponse, EvaluationOut, EvaluationScores, MessageOut
 from app.models.user import User
 from app.routers.deps import get_current_user
-from app.services.mistral_service import evaluate_message, generate_final_scoring
+from app.services.mistral_service import (
+    evaluate_message,
+    generate_final_scoring,
+    stream_mistral,
+    split_into_sentences,
+    parse_eval_meta,
+    SYSTEM_PROMPT,
+)
 
 router = APIRouter(prefix="/evaluations", tags=["evaluations"])
 
@@ -195,6 +204,168 @@ async def chat(
         phase=phase,
         is_complete=is_complete,
         progress_percent=meta.get("progress", 50) if meta else 50,
+    )
+
+
+@router.post("/{evaluation_id}/chat-stream")
+async def chat_stream(
+    evaluation_id: int,
+    body: ChatMessage,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Streaming chat endpoint — returns SSE with sentence-by-sentence text chunks.
+
+    Each sentence is emitted as soon as Mistral produces it, enabling the frontend
+    to start ElevenLabs TTS immediately without waiting for the full AI response.
+    Final event contains metadata (phase, progress, scores) and the full response text.
+    """
+    result = await db.execute(
+        select(Evaluation).where(
+            Evaluation.id == evaluation_id,
+            Evaluation.user_id == user.id,
+        )
+    )
+    evaluation = result.scalar_one_or_none()
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Évaluation introuvable")
+    if evaluation.status != EvaluationStatus.IN_PROGRESS:
+        raise HTTPException(status_code=400, detail="Cette évaluation est déjà terminée")
+
+    clean_message = _sanitize(body.message)
+
+    # Save user message
+    user_msg = EvaluationMessage(
+        evaluation_id=evaluation.id,
+        role="user",
+        content=clean_message,
+    )
+    db.add(user_msg)
+    await db.flush()
+
+    # Load conversation context
+    msg_result = await db.execute(
+        select(EvaluationMessage)
+        .where(EvaluationMessage.evaluation_id == evaluation.id)
+        .order_by(EvaluationMessage.created_at)
+    )
+    all_messages = msg_result.scalars().all()
+    conversation = _build_conversation(all_messages)
+    should_conclude = evaluation.total_messages >= MAX_MESSAGES_PER_EVAL - 4
+
+    # Build Mistral messages
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if should_conclude:
+        messages.extend(conversation)
+        messages.append({
+            "role": "user",
+            "content": (
+                "L'évaluation est maintenant terminée. Génère le scoring final avec la phase SCORING. "
+                "Évalue chaque domaine de 0 à 100 en te basant sur TOUTE la conversation et en appliquant la GRILLE DE NOTATION STRICTE. "
+                "RAPPEL : connaître quelques termes = score 35-45 maximum. "
+                "Rédige un feedback_collaborator encourageant (3-5 phrases) et un feedback_admin détaillé (5-8 phrases). "
+                "Détermine le detected_level. Inclus job_role et job_domain."
+            ),
+        })
+    else:
+        messages.extend(conversation[:-1])
+        messages.append({"role": "user", "content": clean_message})
+
+    # Capture evaluation data for the streaming generator
+    eval_id = evaluation.id
+    eval_total_messages = evaluation.total_messages
+    eval_job_role = evaluation.job_role
+    eval_job_domain = evaluation.job_domain
+
+    async def event_stream():
+        full_response = ""
+        sentence_buffer = ""
+        sentence_index = 0
+
+        async for chunk in stream_mistral(messages):
+            full_response += chunk
+            sentence_buffer += chunk
+
+            # Split at sentence boundaries and emit each sentence immediately
+            completed, sentence_buffer = split_into_sentences(sentence_buffer)
+            for sentence in completed:
+                event_data = json.dumps({"text": sentence, "index": sentence_index}, ensure_ascii=False)
+                yield f"event: sentence\ndata: {event_data}\n\n"
+                sentence_index += 1
+
+        # Emit remaining buffer
+        if sentence_buffer.strip():
+            event_data = json.dumps({"text": sentence_buffer.strip(), "index": sentence_index}, ensure_ascii=False)
+            yield f"event: sentence\ndata: {event_data}\n\n"
+
+        # Parse metadata from full response
+        meta, clean_ai_message = parse_eval_meta(full_response)
+        phase = meta.get("phase", "EXPLORATION") if meta else "EXPLORATION"
+        is_complete = bool(meta and meta.get("phase") == "SCORING")
+
+        # Save to DB in a new session (the original session is closed)
+        async with async_session() as save_db:
+            ai_msg = EvaluationMessage(
+                evaluation_id=eval_id,
+                role="assistant",
+                content=clean_ai_message,
+                phase=phase,
+            )
+            save_db.add(ai_msg)
+
+            ev_result = await save_db.execute(
+                select(Evaluation).where(Evaluation.id == eval_id)
+            )
+            ev = ev_result.scalar_one()
+            ev.total_messages = eval_total_messages + 2
+
+            if meta:
+                if meta.get("job_role") and not eval_job_role:
+                    ev.job_role = meta["job_role"]
+                if meta.get("job_domain") and not eval_job_domain:
+                    ev.job_domain = meta["job_domain"]
+
+            if is_complete and meta:
+                scores = meta.get("scores", {})
+                ev.score_market_knowledge = scores.get("market_knowledge")
+                ev.score_terminology = scores.get("terminology")
+                ev.score_interest_curiosity = scores.get("interest_curiosity")
+                ev.score_personal_watch = scores.get("personal_watch")
+                ev.score_technical_level = scores.get("technical_level")
+                ev.score_ai_usage = scores.get("ai_usage")
+                ev.score_integration_deployment = scores.get("integration_deployment")
+                ev.score_conception_dev = scores.get("conception_dev")
+                all_scores = [v for v in scores.values() if isinstance(v, (int, float))]
+                ev.score_global = round(sum(all_scores) / len(all_scores), 1) if all_scores else 0
+                ev.detected_level = meta.get("detected_level", "intermediaire")
+                ev.feedback_collaborator = meta.get("feedback_collaborator", "")
+                ev.feedback_admin = meta.get("feedback_admin", "")
+                if meta.get("job_role"):
+                    ev.job_role = meta["job_role"]
+                if meta.get("job_domain"):
+                    ev.job_domain = meta["job_domain"]
+                ev.status = EvaluationStatus.COMPLETED
+                ev.completed_at = datetime.now(timezone.utc)
+
+            await save_db.commit()
+
+        # Final event with full response and metadata
+        final_data = json.dumps({
+            "response": clean_ai_message,
+            "phase": phase,
+            "is_complete": is_complete,
+            "progress_percent": meta.get("progress", 50) if meta else 50,
+        }, ensure_ascii=False)
+        yield f"event: done\ndata: {final_data}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

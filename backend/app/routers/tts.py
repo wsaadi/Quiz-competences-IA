@@ -39,10 +39,78 @@ class TranscriptionResponse(BaseModel):
 
 
 def _clean_for_tts(text: str) -> str:
-    """Strip markdown formatting and emojis for cleaner speech."""
+    """Transform text into fluent, natural French speech for ElevenLabs TTS.
+
+    Handles markdown, bullet points, numbered lists, emojis, abbreviations,
+    and structural artifacts so that the voice output sounds smooth and human.
+    """
+    # Remove eval_meta tags if present
+    text = re.sub(r"<eval_meta>.*?</eval_meta>", "", text, flags=re.DOTALL)
+
+    # Remove markdown bold/italic
+    text = re.sub(r"\*\*\*(.*?)\*\*\*", r"\1", text)
     text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
     text = re.sub(r"\*(.*?)\*", r"\1", text)
-    text = re.sub(r"[^\w\s.,;:!?'\"()\-\u2013\u2014/\n]", "", text, flags=re.UNICODE)
+    text = re.sub(r"__(.*?)__", r"\1", text)
+    text = re.sub(r"_(.*?)_", r"\1", text)
+
+    # Remove markdown headers (# Header)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+
+    # Remove markdown links [text](url) → keep text
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+
+    # Remove code blocks and inline code
+    text = re.sub(r"```[\s\S]*?```", "", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+
+    # Convert numbered lists ("1. Item" or "1) Item") to flowing text
+    text = re.sub(r"^\s*\d+[.)]\s*", "  ", text, flags=re.MULTILINE)
+
+    # Convert bullet points (-, *, •, ▸, ▹, ►) to flowing text with pauses
+    text = re.sub(r"^\s*[-*•▸▹►]\s*", "  ", text, flags=re.MULTILINE)
+
+    # Remove emojis and special symbols (preserve French accented chars, punctuation)
+    text = re.sub(
+        r"[\U0001F600-\U0001F9FF\U0001FA00-\U0001FAFF\U00002702-\U000027B0"
+        r"\U0000FE00-\U0000FE0F\U0000200D\U00002600-\U000026FF\U00002700-\U000027BF"
+        r"\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]+",
+        "",
+        text,
+    )
+
+    # Common French abbreviations → full spoken form
+    abbreviations = {
+        r"\bex\s*:\s*": "par exemple, ",
+        r"\bEx\s*:\s*": "Par exemple, ",
+        r"\bcàd\b": "c'est-à-dire",
+        r"\bc-à-d\b": "c'est-à-dire",
+        r"\betc\.\s*": "et cætera. ",
+        r"\bvs\.?\s": "versus ",
+        r"\bn°\s*": "numéro ",
+        r"\bN°\s*": "Numéro ",
+        r"\bIA\b": "I.A.",
+        r"\bLLM\b": "L.L.M.",
+        r"\bRAG\b": "R.A.G.",
+        r"\bAPI\b": "A.P.I.",
+        r"\bMLOps\b": "M.L. Ops",
+        r"\bML\b": "M.L.",
+        r"\bNLP\b": "N.L.P.",
+        r"\bGPT\b": "G.P.T.",
+    }
+    for pattern, replacement in abbreviations.items():
+        text = re.sub(pattern, replacement, text)
+
+    # Collapse multiple newlines into sentence-break pauses
+    text = re.sub(r"\n{2,}", ". ", text)
+    text = re.sub(r"\n", ", ", text)
+
+    # Clean up multiple spaces and punctuation artifacts
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"\s+([.,;:!?])", r"\1", text)
+    text = re.sub(r"([.,;:!?])\1+", r"\1", text)  # dedupe punctuation
+    text = re.sub(r"^\s*[.,;:]\s*", "", text)  # remove leading punctuation artifacts
+
     return text.strip()
 
 
@@ -87,9 +155,9 @@ async def text_to_speech_stream(
                     "text": clean_text,
                     "model_id": settings.ELEVENLABS_MODEL,
                     "voice_settings": {
-                        "stability": 0.5,
-                        "similarity_boost": 0.75,
-                        "style": 0.4,
+                        "stability": 0.65,
+                        "similarity_boost": 0.80,
+                        "style": 0.35,
                         "use_speaker_boost": True,
                     },
                     "optimize_streaming_latency": settings.ELEVENLABS_OPTIMIZE_LATENCY,
@@ -138,9 +206,10 @@ async def transcribe_audio(
             detail="ElevenLabs API key not configured",
         )
 
-    # Validate file type
-    allowed_types = {"audio/webm", "audio/mpeg", "audio/wav", "audio/ogg", "audio/mp4", "audio/x-m4a"}
-    if file.content_type and file.content_type not in allowed_types:
+    # Validate file type (strip codec params like "audio/webm;codecs=opus")
+    allowed_bases = {"audio/webm", "audio/mpeg", "audio/wav", "audio/ogg", "audio/mp4", "audio/x-m4a", "audio/mp3"}
+    base_type = (file.content_type or "").split(";")[0].strip().lower()
+    if base_type and base_type not in allowed_bases:
         raise HTTPException(status_code=400, detail=f"Type audio non supporté: {file.content_type}")
 
     # Read audio data (limit to 25MB)

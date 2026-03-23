@@ -117,6 +117,11 @@ export class EvaluationService {
     );
   }
 
+  /** Returns the base API URL for direct fetch() calls. */
+  getApiUrl(): string {
+    return environment.apiUrl;
+  }
+
   /** Returns TTS endpoint URL and current auth token for direct fetch() streaming. */
   getTTSStreamInfo(): { url: string; token: string | null } {
     const session = sessionStorage.getItem('quiz_ia_session');
