@@ -428,10 +428,41 @@ import { environment } from '../../../environments/environment';
                           </div>
                         </div>
 
+                        <div class="fiche-feedback" *ngIf="ev.feedback_collaborateur">
+                          <h4><mat-icon>auto_awesome</mat-icon> Le mot d'Aria</h4>
+                          <div class="collab-feedback" [innerHTML]="formatFeedback(ev.feedback_collaborateur)"></div>
+                        </div>
+
                         <div class="fiche-feedback" *ngIf="ev.feedback_admin">
-                          <h4>Feedback admin</h4>
+                          <h4><mat-icon>admin_panel_settings</mat-icon> Feedback admin</h4>
                           <p>{{ ev.feedback_admin }}</p>
                         </div>
+
+                        <div class="fiche-conversation-actions">
+                          <button mat-stroked-button (click)="loadFicheConversation(ev.id)" *ngIf="!ficheMessages()[ev.id]">
+                            <mat-icon>chat</mat-icon> Voir la conversation
+                          </button>
+                          <button mat-stroked-button (click)="hideFicheConversation(ev.id)" *ngIf="ficheMessages()[ev.id]">
+                            <mat-icon>visibility_off</mat-icon> Masquer la conversation
+                          </button>
+                        </div>
+
+                        <div class="conversation" *ngIf="ficheMessages()[ev.id] as msgs">
+                          <h4>Conversation ({{ msgs.length }} messages)</h4>
+                          <div
+                            *ngFor="let msg of msgs"
+                            class="conv-msg"
+                            [class.conv-user]="msg.role === 'user'"
+                            [class.conv-ai]="msg.role === 'assistant'"
+                          >
+                            <div class="conv-header">
+                              <strong>{{ msg.role === 'user' ? 'Collaborateur' : 'Aria' }}</strong>
+                              <span class="conv-phase" *ngIf="msg.phase">{{ msg.phase }}</span>
+                            </div>
+                            {{ msg.content }}
+                          </div>
+                        </div>
+
                         <mat-divider *ngIf="i < selectedFiche()!.evaluations.length - 1"></mat-divider>
                       </div>
                     </div>
@@ -1033,6 +1064,7 @@ export class AdminComponent implements OnInit {
   evaluations = signal<EvaluationDetail[]>([]);
   stats = signal<GlobalStats | null>(null);
   selectedFiche = signal<CollaborateurFiche | null>(null);
+  ficheMessages = signal<Record<number, any[]>>({});
   creatingUser = signal(false);
 
   // Config
@@ -1347,6 +1379,26 @@ export class AdminComponent implements OnInit {
 
   closeFiche(): void {
     this.selectedFiche.set(null);
+    this.ficheMessages.set({});
+  }
+
+  loadFicheConversation(evalId: number): void {
+    this.adminService.getEvaluationDetail(evalId).subscribe({
+      next: (detail) => {
+        this.ficheMessages.update((map) => ({
+          ...map,
+          [evalId]: detail.messages || [],
+        }));
+      },
+    });
+  }
+
+  hideFicheConversation(evalId: number): void {
+    this.ficheMessages.update((map) => {
+      const copy = { ...map };
+      delete copy[evalId];
+      return copy;
+    });
   }
 
   printFiche(): void {
