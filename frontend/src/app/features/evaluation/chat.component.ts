@@ -946,7 +946,7 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
       console.log('[STT] Got single-use token, connecting WebSocket...');
 
       // Connect WebSocket to ElevenLabs realtime STT
-      const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?token=${sttToken}&language_code=fra&model_id=scribe_v2_realtime&sample_rate=16000&encoding=pcm_s16le`;
+      const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?token=${sttToken}&language_code=fra&model_id=scribe_v2_realtime&sample_rate=16000&audio_format=pcm_16000`;
       this.sttWebSocket = new WebSocket(wsUrl);
 
       // Wait for WebSocket to open before streaming audio
