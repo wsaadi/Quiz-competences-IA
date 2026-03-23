@@ -7,6 +7,7 @@ import {
   AfterViewChecked,
   OnInit,
   OnDestroy,
+  NgZone,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -580,7 +581,8 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   constructor(
     private evaluationService: EvaluationService,
     private authService: AuthService,
-    private router: Router
+    private router: Router,
+    private ngZone: NgZone
   ) {
     if (navigator.mediaDevices && typeof MediaRecorder !== 'undefined') {
       this.speechSupported = true;
@@ -750,26 +752,30 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
                 const sentenceText = parsed.text;
                 if (sentenceText) {
                   fullResponse += (fullResponse ? ' ' : '') + sentenceText;
-                  this.streamingResponse.set(fullResponse);
-                  this.shouldScroll = true;
+                  this.ngZone.run(() => {
+                    this.streamingResponse.set(fullResponse);
+                    this.shouldScroll = true;
+                  });
                   if (this.autoTTS()) {
                     this.enqueueTTSSentence(sentenceText);
                   }
                 }
               } else if (eventType === 'done') {
                 const finalResponse = parsed.response || fullResponse;
-                this.streamingResponse.set('');
-                this.sending.set(false);
-                this.lastFailedMessage = '';
-                this.messages.update((m) => [
-                  ...m,
-                  { role: 'assistant', content: finalResponse, timestamp: new Date() },
-                ]);
-                this.progress.set(parsed.progress_percent || 50);
-                this.currentPhase.set(parsed.phase || 'EXPLORATION');
-                this.isComplete.set(parsed.is_complete || false);
-                this.avatarMood.set(parsed.is_complete ? 'happy' : 'encouraging');
-                this.shouldScroll = true;
+                this.ngZone.run(() => {
+                  this.streamingResponse.set('');
+                  this.sending.set(false);
+                  this.lastFailedMessage = '';
+                  this.messages.update((m) => [
+                    ...m,
+                    { role: 'assistant', content: finalResponse, timestamp: new Date() },
+                  ]);
+                  this.progress.set(parsed.progress_percent || 50);
+                  this.currentPhase.set(parsed.phase || 'EXPLORATION');
+                  this.isComplete.set(parsed.is_complete || false);
+                  this.avatarMood.set(parsed.is_complete ? 'happy' : 'encouraging');
+                  this.shouldScroll = true;
+                });
               }
             } catch {
               // Skip malformed JSON
@@ -888,6 +894,11 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
       this.sttCommittedText = '';
       this.userMessage = '';
       this.isRecording.set(true);
+
+      // Auto-enable TTS when user records voice (natural expectation: speak → hear back)
+      if (!this.autoTTS()) {
+        this.autoTTS.set(true);
+      }
 
       // Start MediaRecorder as backup (for non-realtime fallback)
       this.mediaRecorder = new MediaRecorder(stream, { mimeType: this.getRecordingMimeType() });
