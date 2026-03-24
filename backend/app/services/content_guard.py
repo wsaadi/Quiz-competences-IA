@@ -221,6 +221,8 @@ async def _call_scaleway(
             headers=headers,
             json=payload,
         )
+        if resp.status_code != 200:
+            logger.error("Scaleway API error %s: %s", resp.status_code, resp.text)
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"].strip()
