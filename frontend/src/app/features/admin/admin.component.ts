@@ -1,6 +1,7 @@
 import { Component, OnInit, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatCardModule } from '@angular/material/card';
@@ -73,6 +74,9 @@ import { environment } from '../../../environments/environment';
         <app-avatar [size]="36" mood="neutral"></app-avatar>
         <span class="toolbar-title">Administration</span>
         <span class="spacer"></span>
+        <button mat-raised-button color="accent" (click)="startSelfEvaluation()" matTooltip="Passer l'évaluation IA moi-même" class="self-eval-btn">
+          <mat-icon>quiz</mat-icon> Me tester
+        </button>
         <button mat-icon-button (click)="loadData()" matTooltip="Rafraîchir">
           <mat-icon>refresh</mat-icon>
         </button>
@@ -808,6 +812,7 @@ import { environment } from '../../../environments/environment';
       .toolbar-title { font-size: 18px; font-weight: 500; }
       .spacer { flex: 1; }
     }
+    .self-eval-btn { margin-right: 8px; }
     .content { max-width: 1200px; margin: 0 auto; padding: 24px; }
     .tab-content { padding: 24px 0; }
 
@@ -1268,7 +1273,8 @@ export class AdminComponent implements OnInit {
   constructor(
     private adminService: AdminService,
     private authService: AuthService,
-    private snackBar: MatSnackBar
+    private snackBar: MatSnackBar,
+    private router: Router
   ) {}
 
   ngOnInit(): void {
@@ -1517,6 +1523,10 @@ export class AdminComponent implements OnInit {
   exportCSV(): void {
     this.adminService.exportEvaluationsCSV();
     this.snackBar.open('Export CSV en cours...', 'OK', { duration: 2000 });
+  }
+
+  startSelfEvaluation(): void {
+    this.router.navigate(['/dashboard']);
   }
 
   logout(): void {

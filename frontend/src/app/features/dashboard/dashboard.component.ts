@@ -39,6 +39,9 @@ import { ScoreRadarComponent } from '../../shared/components/score-radar.compone
         <span class="toolbar-title">Mon Espace</span>
         <span class="spacer"></span>
         <span class="user-name">{{ userName }}</span>
+        <button *ngIf="isAdmin" mat-raised-button color="accent" (click)="goToAdmin()" class="back-admin-btn">
+          <mat-icon>admin_panel_settings</mat-icon> Administration
+        </button>
         <button mat-icon-button (click)="logout()">
           <mat-icon>logout</mat-icon>
         </button>
@@ -520,6 +523,7 @@ export class DashboardComponent implements OnInit {
   hasInProgress = signal(false);
   loaded = signal(false);
   userName = '';
+  isAdmin = false;
 
   // Evaluation detail view
   selectedEval = signal<Evaluation | null>(null);
@@ -532,6 +536,7 @@ export class DashboardComponent implements OnInit {
     private router: Router
   ) {
     this.userName = this.authService.currentUser()?.fullName ?? '';
+    this.isAdmin = this.authService.isAdmin();
   }
 
   ngOnInit(): void {
@@ -577,6 +582,10 @@ export class DashboardComponent implements OnInit {
   closeDetail(): void {
     this.selectedEval.set(null);
     this.selectedMessages.set([]);
+  }
+
+  goToAdmin(): void {
+    this.router.navigate(['/admin']);
   }
 
   logout(): void {
