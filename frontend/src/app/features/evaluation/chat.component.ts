@@ -582,6 +582,9 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   // TTS sentence queue for streaming pipeline
   private ttsSentenceQueue: string[] = [];
   private ttsPlaying = false;
+
+  // Persistent AudioContext for TTS — unlocked once via user gesture
+  private ttsAudioContext: AudioContext | null = null;
   private streamAbortController: AbortController | null = null;
 
   private lastFailedMessage = '';
@@ -722,6 +725,11 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
   sendMessage(): void {
     const text = this.userMessage.trim();
     if (!text || !this.evaluationId() || this.sending()) return;
+
+    // Unlock audio during user gesture so TTS autoplay works later
+    if (this.autoTTS()) {
+      this.unlockAudioContext();
+    }
 
     this.stopRecordingCleanup();
     this.errorMessage.set(null);
@@ -1436,6 +1444,39 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
 
   toggleAutoTTS(): void {
     this.autoTTS.update((v) => !v);
+    // Unlock audio on toggle so subsequent autoplay works
+    if (this.autoTTS()) {
+      this.unlockAudioContext();
+    }
+  }
+
+  /**
+   * Unlock browser audio playback during a user gesture (click/tap).
+   * Browsers block audio.play() unless a user gesture recently occurred.
+   * We play a tiny silent WAV to "warm up" the HTMLAudioElement path,
+   * and resume an AudioContext — this unlocks audio for subsequent calls.
+   */
+  private unlockAudioContext(): void {
+    // Warm up HTMLAudioElement path (used by playStreamingAudio / playBlobAudio)
+    // Minimal valid WAV: 44-byte header + 1 sample of silence
+    const silentWav = new Uint8Array([
+      0x52,0x49,0x46,0x46, 0x25,0x00,0x00,0x00, 0x57,0x41,0x56,0x45,
+      0x66,0x6D,0x74,0x20, 0x10,0x00,0x00,0x00, 0x01,0x00,0x01,0x00,
+      0x44,0xAC,0x00,0x00, 0x88,0x58,0x01,0x00, 0x02,0x00,0x10,0x00,
+      0x64,0x61,0x74,0x61, 0x02,0x00,0x00,0x00, 0x00,0x00,
+    ]);
+    const blob = new Blob([silentWav], { type: 'audio/wav' });
+    const audio = new Audio(URL.createObjectURL(blob));
+    audio.volume = 0;
+    audio.play().then(() => audio.remove()).catch(() => {});
+
+    // Also resume AudioContext if suspended
+    if (!this.ttsAudioContext) {
+      this.ttsAudioContext = new AudioContext();
+    }
+    if (this.ttsAudioContext.state === 'suspended') {
+      this.ttsAudioContext.resume().catch(() => {});
+    }
   }
 
   private autoSpeakIfEnabled(text: string): void {
