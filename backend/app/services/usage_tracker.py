@@ -7,7 +7,8 @@ from app.models.config import ApiUsageLog
 
 logger = logging.getLogger(__name__)
 
-_MAX_RETRIES = 2
+_MAX_RETRIES = 4
+_RETRY_DELAYS = [0.5, 1.0, 2.0, 4.0]
 
 
 async def log_api_usage(
@@ -36,6 +37,6 @@ async def log_api_usage(
             return
         except Exception as exc:
             if attempt < _MAX_RETRIES:
-                await asyncio.sleep(0.3 * (attempt + 1))
+                await asyncio.sleep(_RETRY_DELAYS[attempt])
             else:
-                logger.warning("Failed to log API usage: %s", exc)
+                logger.warning("Failed to log API usage after %d retries: %s", _MAX_RETRIES, exc)
