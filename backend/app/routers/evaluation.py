@@ -14,6 +14,7 @@ from app.services.content_guard import (
     moderate_message,
     pseudonymize_message,
     depseudonymize_response,
+    pseudonymize_conversation,
     BLOCKED_RESPONSE,
     OFF_TOPIC_RESPONSE,
 )
@@ -305,6 +306,15 @@ async def chat_stream(
     # ── Pseudonymize before sending to Mistral ──
     pseudonymized_message, pii_replacements = await pseudonymize_message(clean_message)
 
+    # Accumulate PII replacements across the entire evaluation session
+    accumulated_pii: dict = evaluation.pii_map or {}
+    if pii_replacements:
+        accumulated_pii.update(pii_replacements)
+        evaluation.pii_map = accumulated_pii
+        # Ensure SQLAlchemy detects the JSON mutation
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(evaluation, "pii_map")
+
     # Save user message (original, not pseudonymized)
     user_msg = EvaluationMessage(
         evaluation_id=evaluation.id,
@@ -323,9 +333,9 @@ async def chat_stream(
     all_messages = msg_result.scalars().all()
     conversation = _build_conversation(all_messages)
 
-    # If pseudonymized, replace last user message in conversation for Mistral
-    if pii_replacements:
-        conversation[-1] = {"role": "user", "content": pseudonymized_message}
+    # Apply ALL accumulated PII replacements to the entire conversation
+    # so the LLM never sees real PII, even from earlier messages
+    conversation = pseudonymize_conversation(conversation, accumulated_pii)
 
     should_conclude = evaluation.total_messages >= MAX_MESSAGES_PER_EVAL - 4
 
@@ -346,15 +356,15 @@ async def chat_stream(
             ),
         })
     else:
-        messages.extend(conversation[:-1])
-        messages.append({"role": "user", "content": pseudonymized_message})
+        # Conversation is already fully pseudonymized via pseudonymize_conversation
+        messages.extend(conversation)
 
     # Capture evaluation data for the streaming generator
     eval_id = evaluation.id
     eval_total_messages = evaluation.total_messages
     eval_job_role = evaluation.job_role
     eval_job_domain = evaluation.job_domain
-    _pii_map = pii_replacements  # capture for closure
+    _pii_map = accumulated_pii or pii_replacements  # use full accumulated map for de-pseudonymization
 
     async def event_stream():
         full_response = ""
