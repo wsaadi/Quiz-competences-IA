@@ -85,7 +85,19 @@ async def moderate_message(text: str) -> dict:
             {"role": "user", "content": text},
         ], max_tokens=100, temperature=0.0)
 
-        parsed = json.loads(result)
+        logger.debug("Moderation raw LLM response: %r", result)
+
+        cleaned = result.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            cleaned = "\n".join(lines).strip()
+        if not cleaned.startswith("{"):
+            match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if match:
+                cleaned = match.group(0)
+
+        parsed = json.loads(cleaned)
         if parsed.get("status") in ("blocked", "off_topic"):
             return parsed
         return {"status": "ok"}
@@ -178,7 +190,23 @@ async def pseudonymize_message(text: str) -> tuple[str, dict | None]:
             {"role": "user", "content": text},
         ], max_tokens=1000, temperature=0.0)
 
-        parsed = json.loads(result)
+        logger.debug("Pseudonymization raw LLM response: %r", result)
+
+        # The LLM sometimes wraps JSON in markdown code blocks
+        cleaned = result.strip()
+        if cleaned.startswith("```"):
+            # Remove ```json ... ``` or ``` ... ```
+            lines = cleaned.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            cleaned = "\n".join(lines).strip()
+
+        # Try to extract JSON object if LLM added surrounding text
+        if not cleaned.startswith("{"):
+            match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if match:
+                cleaned = match.group(0)
+
+        parsed = json.loads(cleaned)
         if parsed.get("has_pii") and parsed.get("pseudonymized"):
             replacements = parsed.get("replacements", {})
             logger.info(
