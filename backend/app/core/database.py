@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 
 from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -10,20 +11,33 @@ logger = logging.getLogger(__name__)
 
 # Build engine with appropriate pooling config
 _engine_kwargs: dict = {"echo": settings.DEBUG}
+_is_sqlite = settings.DATABASE_URL.startswith("sqlite")
 
 if settings.DATABASE_URL.startswith("postgresql"):
     # PostgreSQL: configure connection pool for concurrent users
     _engine_kwargs.update({
         "pool_size": settings.DB_POOL_SIZE,
         "max_overflow": settings.DB_MAX_OVERFLOW,
-        "pool_pre_ping": True,  # Verify connections are alive before use
-        "pool_recycle": 300,  # Recycle connections after 5 min
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
     })
+
+if _is_sqlite:
+    # Set WAL mode once at module load on the raw DB file
+    _db_path = settings.DATABASE_URL.split("///")[-1]
+    try:
+        _conn = sqlite3.connect(_db_path)
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA busy_timeout=5000")
+        _conn.close()
+        logger.info("SQLite WAL mode enabled on %s", _db_path)
+    except Exception:
+        pass  # DB file may not exist yet, init_db will create it
 
 engine = create_async_engine(settings.DATABASE_URL, **_engine_kwargs)
 
-# SQLite: enable WAL mode + busy timeout for concurrent access
-if settings.DATABASE_URL.startswith("sqlite"):
+# Ensure every new SQLite connection gets the pragmas
+if _is_sqlite:
     @event.listens_for(engine.sync_engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, _connection_record):
         cursor = dbapi_conn.cursor()

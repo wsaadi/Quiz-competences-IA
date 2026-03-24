@@ -17,6 +17,7 @@ from app.services.content_guard import (
     BLOCKED_RESPONSE,
     OFF_TOPIC_RESPONSE,
 )
+from app.models.config import ApiUsageLog
 from app.models.evaluation import Evaluation, EvaluationMessage, EvaluationStatus
 from app.models.schemas import ChatMessage, ChatResponse, EvaluationOut, EvaluationScores, MessageOut
 from app.models.user import User
@@ -93,13 +94,13 @@ async def start_evaluation(
     )
     ai_response, meta, usage = await evaluate_message([], initial_context)
 
-    # Log Mistral usage
-    await log_api_usage(
+    # Log Mistral usage (same session to avoid SQLite lock)
+    db.add(ApiUsageLog(
         service="mistral", endpoint="chat",
         tokens_in=usage.get("prompt_tokens", 0),
         tokens_out=usage.get("completion_tokens", 0),
         evaluation_id=evaluation.id, user_id=user.id,
-    )
+    ))
 
     # Save AI message
     ai_msg = EvaluationMessage(
@@ -195,13 +196,13 @@ async def chat(
     # De-pseudonymize AI response so user sees real names
     ai_response = depseudonymize_response(ai_response, pii_replacements)
 
-    # Log Mistral usage
-    await log_api_usage(
+    # Log Mistral usage (same session to avoid SQLite lock)
+    db.add(ApiUsageLog(
         service="mistral", endpoint="chat",
         tokens_in=usage.get("prompt_tokens", 0),
         tokens_out=usage.get("completion_tokens", 0),
         evaluation_id=evaluation.id, user_id=user.id,
-    )
+    ))
 
     # Save AI message
     phase = meta.get("phase", "EXPLORATION") if meta else "EXPLORATION"
@@ -516,13 +517,13 @@ async def force_complete(
 
     ai_response, meta, usage = await generate_final_scoring(conversation)
 
-    # Log Mistral usage
-    await log_api_usage(
+    # Log Mistral usage (same session to avoid SQLite lock)
+    db.add(ApiUsageLog(
         service="mistral", endpoint="chat",
         tokens_in=usage.get("prompt_tokens", 0),
         tokens_out=usage.get("completion_tokens", 0),
         evaluation_id=evaluation.id, user_id=user.id,
-    )
+    ))
 
     if meta and meta.get("scores"):
         scores = meta["scores"]
