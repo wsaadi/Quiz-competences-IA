@@ -298,8 +298,15 @@ async def chat_stream(
         await db.commit()
 
         async def _moderation_stream():
-            yield f"data: {json.dumps({'type': 'sentence', 'text': canned})}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'full_text': canned, 'meta': {'phase': 'MODERATION', 'progress': 0}})}\n\n"
+            sentence_data = json.dumps({"text": canned, "index": 0}, ensure_ascii=False)
+            yield f"event: sentence\ndata: {sentence_data}\n\n"
+            done_data = json.dumps({
+                "response": canned,
+                "phase": "MODERATION",
+                "is_complete": False,
+                "progress_percent": 0,
+            }, ensure_ascii=False)
+            yield f"event: done\ndata: {done_data}\n\n"
 
         return StreamingResponse(_moderation_stream(), media_type="text/event-stream")
 
