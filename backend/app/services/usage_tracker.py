@@ -1,10 +1,13 @@
 """Utility for logging API usage to the database."""
 
+import asyncio
 import logging
 from app.core.database import async_session
 from app.models.config import ApiUsageLog
 
 logger = logging.getLogger(__name__)
+
+_MAX_RETRIES = 2
 
 
 async def log_api_usage(
@@ -16,18 +19,23 @@ async def log_api_usage(
     evaluation_id: int | None = None,
     user_id: int | None = None,
 ):
-    """Fire-and-forget usage logging."""
-    try:
-        async with async_session() as session:
-            session.add(ApiUsageLog(
-                service=service,
-                endpoint=endpoint,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                characters=characters,
-                evaluation_id=evaluation_id,
-                user_id=user_id,
-            ))
-            await session.commit()
-    except Exception as exc:
-        logger.warning("Failed to log API usage: %s", exc)
+    """Fire-and-forget usage logging with retry on transient DB errors."""
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            async with async_session() as session:
+                session.add(ApiUsageLog(
+                    service=service,
+                    endpoint=endpoint,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    characters=characters,
+                    evaluation_id=evaluation_id,
+                    user_id=user_id,
+                ))
+                await session.commit()
+            return
+        except Exception as exc:
+            if attempt < _MAX_RETRIES:
+                await asyncio.sleep(0.3 * (attempt + 1))
+            else:
+                logger.warning("Failed to log API usage: %s", exc)
