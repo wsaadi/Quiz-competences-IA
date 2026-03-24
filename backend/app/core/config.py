@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     ELEVENLABS_MODEL: str = "eleven_turbo_v2_5"  # Low-latency model (~2x faster than multilingual_v2)
     ELEVENLABS_OPTIMIZE_LATENCY: int = 3  # 0-4, higher = lower latency (slight quality tradeoff)
 
+    # Scaleway Generative API (pseudonymization)
+    SCW_ACCESS_KEY: str = ""
+    SCW_SECRET_KEY: str = ""
+    SCW_GENERATIVE_API_URL: str = "https://api.scaleway.ai/v1/chat/completions"
+    SCW_MODEL: str = "mistral-small-3-1-24b-instruct-2503"
+
     # Security
     BCRYPT_ROUNDS: int = 12
     MAX_LOGIN_ATTEMPTS: int = 5

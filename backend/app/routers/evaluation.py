@@ -10,6 +10,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db, async_session
+from app.services.content_guard import (
+    moderate_message,
+    pseudonymize_message,
+    depseudonymize_response,
+    BLOCKED_RESPONSE,
+    OFF_TOPIC_RESPONSE,
+)
 from app.models.evaluation import Evaluation, EvaluationMessage, EvaluationStatus
 from app.models.schemas import ChatMessage, ChatResponse, EvaluationOut, EvaluationScores, MessageOut
 from app.models.user import User
@@ -136,7 +143,26 @@ async def chat(
     # Sanitize user input
     clean_message = _sanitize(body.message)
 
-    # Save user message
+    # ── Content moderation ──
+    moderation = await moderate_message(clean_message)
+    if moderation["status"] in ("blocked", "off_topic"):
+        canned = BLOCKED_RESPONSE if moderation["status"] == "blocked" else OFF_TOPIC_RESPONSE
+        # Save both messages (user + canned AI response)
+        db.add(EvaluationMessage(evaluation_id=evaluation.id, role="user", content=clean_message))
+        db.add(EvaluationMessage(evaluation_id=evaluation.id, role="assistant", content=canned, phase="MODERATION"))
+        evaluation.total_messages += 2
+        await db.commit()
+        return ChatResponse(
+            response=canned,
+            phase="MODERATION",
+            is_complete=False,
+            progress_percent=0,
+        )
+
+    # ── Pseudonymize before sending to Mistral ──
+    pseudonymized_message, pii_replacements = await pseudonymize_message(clean_message)
+
+    # Save user message (original, not pseudonymized)
     user_msg = EvaluationMessage(
         evaluation_id=evaluation.id,
         role="user",
@@ -154,13 +180,20 @@ async def chat(
     all_messages = msg_result.scalars().all()
     conversation = _build_conversation(all_messages)
 
+    # If pseudonymized, replace last user message in conversation for Mistral
+    if pii_replacements:
+        conversation[-1] = {"role": "user", "content": pseudonymized_message}
+
     # Check if we should wrap up
     should_conclude = evaluation.total_messages >= MAX_MESSAGES_PER_EVAL - 4
 
     if should_conclude:
         ai_response, meta, usage = await generate_final_scoring(conversation)
     else:
-        ai_response, meta, usage = await evaluate_message(conversation[:-1], clean_message)
+        ai_response, meta, usage = await evaluate_message(conversation[:-1], pseudonymized_message)
+
+    # De-pseudonymize AI response so user sees real names
+    ai_response = depseudonymize_response(ai_response, pii_replacements)
 
     # Log Mistral usage
     await log_api_usage(
@@ -253,7 +286,25 @@ async def chat_stream(
 
     clean_message = _sanitize(body.message)
 
-    # Save user message
+    # ── Content moderation ──
+    moderation = await moderate_message(clean_message)
+    if moderation["status"] in ("blocked", "off_topic"):
+        canned = BLOCKED_RESPONSE if moderation["status"] == "blocked" else OFF_TOPIC_RESPONSE
+        db.add(EvaluationMessage(evaluation_id=evaluation.id, role="user", content=clean_message))
+        db.add(EvaluationMessage(evaluation_id=evaluation.id, role="assistant", content=canned, phase="MODERATION"))
+        evaluation.total_messages += 2
+        await db.commit()
+
+        async def _moderation_stream():
+            yield f"data: {json.dumps({'type': 'sentence', 'text': canned})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'full_text': canned, 'meta': {'phase': 'MODERATION', 'progress': 0}})}\n\n"
+
+        return StreamingResponse(_moderation_stream(), media_type="text/event-stream")
+
+    # ── Pseudonymize before sending to Mistral ──
+    pseudonymized_message, pii_replacements = await pseudonymize_message(clean_message)
+
+    # Save user message (original, not pseudonymized)
     user_msg = EvaluationMessage(
         evaluation_id=evaluation.id,
         role="user",
@@ -270,6 +321,11 @@ async def chat_stream(
     )
     all_messages = msg_result.scalars().all()
     conversation = _build_conversation(all_messages)
+
+    # If pseudonymized, replace last user message in conversation for Mistral
+    if pii_replacements:
+        conversation[-1] = {"role": "user", "content": pseudonymized_message}
+
     should_conclude = evaluation.total_messages >= MAX_MESSAGES_PER_EVAL - 4
 
     # Build Mistral messages
@@ -290,13 +346,14 @@ async def chat_stream(
         })
     else:
         messages.extend(conversation[:-1])
-        messages.append({"role": "user", "content": clean_message})
+        messages.append({"role": "user", "content": pseudonymized_message})
 
     # Capture evaluation data for the streaming generator
     eval_id = evaluation.id
     eval_total_messages = evaluation.total_messages
     eval_job_role = evaluation.job_role
     eval_job_domain = evaluation.job_domain
+    _pii_map = pii_replacements  # capture for closure
 
     async def event_stream():
         full_response = ""
@@ -316,11 +373,13 @@ async def chat_stream(
                 if before_tag.strip():
                     completed, leftover = split_into_sentences(before_tag)
                     for sentence in completed:
-                        event_data = json.dumps({"text": sentence, "index": sentence_index}, ensure_ascii=False)
+                        out = depseudonymize_response(sentence, _pii_map)
+                        event_data = json.dumps({"text": out, "index": sentence_index}, ensure_ascii=False)
                         yield f"event: sentence\ndata: {event_data}\n\n"
                         sentence_index += 1
                     if leftover.strip():
-                        event_data = json.dumps({"text": leftover.strip(), "index": sentence_index}, ensure_ascii=False)
+                        out = depseudonymize_response(leftover.strip(), _pii_map)
+                        event_data = json.dumps({"text": out, "index": sentence_index}, ensure_ascii=False)
                         yield f"event: sentence\ndata: {event_data}\n\n"
                         sentence_index += 1
                 sentence_buffer = ""
@@ -334,17 +393,20 @@ async def chat_stream(
             # Normal path: split at sentence boundaries and emit
             completed, sentence_buffer = split_into_sentences(sentence_buffer)
             for sentence in completed:
-                event_data = json.dumps({"text": sentence, "index": sentence_index}, ensure_ascii=False)
+                out = depseudonymize_response(sentence, _pii_map)
+                event_data = json.dumps({"text": out, "index": sentence_index}, ensure_ascii=False)
                 yield f"event: sentence\ndata: {event_data}\n\n"
                 sentence_index += 1
 
         # Emit remaining buffer (only if not inside meta block)
         if not inside_meta and sentence_buffer.strip():
-            event_data = json.dumps({"text": sentence_buffer.strip(), "index": sentence_index}, ensure_ascii=False)
+            out = depseudonymize_response(sentence_buffer.strip(), _pii_map)
+            event_data = json.dumps({"text": out, "index": sentence_index}, ensure_ascii=False)
             yield f"event: sentence\ndata: {event_data}\n\n"
 
         # Parse metadata from full response
         meta, clean_ai_message = parse_eval_meta(full_response)
+        clean_ai_message = depseudonymize_response(clean_ai_message, _pii_map)
         phase = meta.get("phase", "EXPLORATION") if meta else "EXPLORATION"
         is_complete = bool(meta and meta.get("phase") == "SCORING")
 

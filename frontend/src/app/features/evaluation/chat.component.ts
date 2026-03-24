@@ -22,6 +22,7 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { TextFieldModule } from '@angular/cdk/text-field';
 import { EvaluationService } from '../../core/services/evaluation.service';
 import { AuthService } from '../../core/services/auth.service';
 import { AvatarComponent } from '../../shared/components/avatar.component';
@@ -48,6 +49,7 @@ interface ChatMsg {
     MatToolbarModule,
     MatChipsModule,
     MatTooltipModule,
+    TextFieldModule,
     AvatarComponent,
   ],
   template: `
@@ -221,14 +223,17 @@ interface ChatMsg {
             <mat-icon>{{ isTranscribing() ? 'hourglass_top' : isRecording() ? 'mic_off' : 'mic' }}</mat-icon>
           </button>
           <mat-form-field appearance="outline" class="msg-input">
-            <input
+            <textarea
               matInput
+              cdkTextareaAutosize
+              cdkAutosizeMinRows="1"
+              cdkAutosizeMaxRows="6"
               [(ngModel)]="userMessage"
               [placeholder]="isTranscribing() ? 'Transcription en cours...' : isRecording() ? 'Dictée en cours...' : 'Tape ta réponse ici...'"
-              (keydown.enter)="sendMessage()"
+              (keydown.enter)="onEnterKey($event)"
               [disabled]="sending()"
               autocomplete="off"
-            />
+            ></textarea>
           </mat-form-field>
           <button
             mat-fab
@@ -496,10 +501,18 @@ interface ChatMsg {
       padding: 16px 24px;
       background: white;
       border-top: 1px solid #e0e0e0;
-      align-items: center;
+      align-items: flex-end;
     }
 
-    .msg-input { flex: 1; margin-bottom: -20px; }
+    .msg-input {
+      flex: 1;
+      margin-bottom: -20px;
+    }
+    .msg-input textarea {
+      resize: none;
+      line-height: 1.5;
+      overflow-y: auto;
+    }
 
     .send-btn { flex-shrink: 0; }
 
@@ -699,6 +712,13 @@ export class ChatComponent implements AfterViewChecked, OnInit, OnDestroy {
    * sent to ElevenLabs TTS for parallel audio playback.
    * Falls back to non-streaming endpoint on error.
    */
+  onEnterKey(event: Event): void {
+    const ke = event as KeyboardEvent;
+    if (ke.shiftKey) return; // Shift+Enter = new line
+    ke.preventDefault();
+    this.sendMessage();
+  }
+
   sendMessage(): void {
     const text = this.userMessage.trim();
     if (!text || !this.evaluationId() || this.sending()) return;
