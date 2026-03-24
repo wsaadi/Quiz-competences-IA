@@ -225,19 +225,67 @@ async def pseudonymize_message(text: str) -> tuple[str, dict | None]:
         return text, None
 
 
+def _build_word_level_replacements(replacements: dict) -> dict:
+    """Extract word-level diffs from multi-word replacement pairs.
+
+    E.g., "Nom de code Sirius" → "Nom de code Aurora" yields "Sirius" → "Aurora"
+    (and reversed for de-pseudonymization: "Aurora" → "Sirius").
+    This handles cases where the AI references just the distinctive word.
+    """
+    word_map = {}
+    for original, pseudo in replacements.items():
+        orig_words = original.split()
+        pseudo_words = pseudo.split()
+        if len(orig_words) == len(pseudo_words) and len(orig_words) > 1:
+            for ow, pw in zip(orig_words, pseudo_words):
+                if ow != pw and len(ow) > 2 and len(pw) > 2:
+                    word_map[ow] = pw
+    return word_map
+
+
 def depseudonymize_response(response: str, replacements: dict | None) -> str:
     """Reverse pseudonymization on AI response so user sees real names.
 
     Since the AI received pseudonymized input, its response may reference
     the fictional names. We swap them back to the originals.
+    Handles both full phrases and individual distinctive words.
     """
     if not replacements:
         return response
-    for original, pseudo in replacements.items():
+
+    # First pass: replace full phrases (longest first to avoid partial conflicts)
+    for original, pseudo in sorted(replacements.items(), key=lambda x: len(x[1]), reverse=True):
         if pseudo in response:
             logger.debug("De-pseudonymization: %r → %r", pseudo, original)
-        response = response.replace(pseudo, original)
+            response = response.replace(pseudo, original)
+
+    # Second pass: replace individual distinctive words that differ
+    word_map = _build_word_level_replacements(replacements)
+    for original_word, pseudo_word in word_map.items():
+        if pseudo_word in response:
+            logger.debug("De-pseudonymization (word): %r → %r", pseudo_word, original_word)
+            response = response.replace(pseudo_word, original_word)
+
     return response
+
+
+def pseudonymize_conversation(conversation: list[dict], pii_map: dict | None) -> list[dict]:
+    """Apply accumulated PII replacements to the entire conversation.
+
+    Replaces original values with pseudonyms in all messages so the LLM
+    never sees real PII, even from earlier messages in the conversation.
+    """
+    if not pii_map:
+        return conversation
+
+    result = []
+    for msg in conversation:
+        content = msg["content"]
+        # Apply replacements: original → pseudo (longest first)
+        for original, pseudo in sorted(pii_map.items(), key=lambda x: len(x[0]), reverse=True):
+            content = content.replace(original, pseudo)
+        result.append({"role": msg["role"], "content": content})
+    return result
 
 
 # ─── Scaleway API helper ─────────────────────────────────────────────────────

@@ -54,6 +54,9 @@ class Evaluation(Base):
     # Conversation stored as JSON
     conversation_history: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # Accumulated PII replacements {original: pseudo} across all messages
+    pii_map: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     user = relationship("User", back_populates="evaluations")
     messages = relationship("EvaluationMessage", back_populates="evaluation", lazy="selectin")
 
