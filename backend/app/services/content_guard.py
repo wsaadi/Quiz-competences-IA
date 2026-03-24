@@ -163,10 +163,14 @@ async def pseudonymize_message(text: str) -> tuple[str, dict | None]:
     If no Scaleway key configured or no PII found, returns original text.
     """
     if not settings.SCW_SECRET_KEY:
+        logger.debug("Pseudonymization skipped: no SCW_SECRET_KEY configured")
         return text, None
 
     if not _has_obvious_pii(text):
+        logger.debug("Pseudonymization skipped: no obvious PII detected in message")
         return text, None
+
+    logger.info("Pseudonymization: analyzing message (%d chars)", len(text))
 
     try:
         result = await _call_scaleway([
@@ -176,7 +180,17 @@ async def pseudonymize_message(text: str) -> tuple[str, dict | None]:
 
         parsed = json.loads(result)
         if parsed.get("has_pii") and parsed.get("pseudonymized"):
-            return parsed["pseudonymized"], parsed.get("replacements")
+            replacements = parsed.get("replacements", {})
+            logger.info(
+                "Pseudonymization ACTIVE — replacements: %s",
+                json.dumps(replacements, ensure_ascii=False),
+            )
+            logger.info(
+                "Pseudonymization result — original: %r → pseudonymized: %r",
+                text, parsed["pseudonymized"],
+            )
+            return parsed["pseudonymized"], replacements
+        logger.info("Pseudonymization: LLM found no PII (has_pii=%s)", parsed.get("has_pii"))
         return text, None
     except Exception as e:
         logger.warning("Pseudonymization LLM call failed, using original: %s", e)
@@ -192,6 +206,8 @@ def depseudonymize_response(response: str, replacements: dict | None) -> str:
     if not replacements:
         return response
     for original, pseudo in replacements.items():
+        if pseudo in response:
+            logger.debug("De-pseudonymization: %r → %r", pseudo, original)
         response = response.replace(pseudo, original)
     return response
 
